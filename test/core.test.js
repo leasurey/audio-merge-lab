@@ -467,7 +467,17 @@ test('sniffFormat: 识别常见容器/编码', () => {
   assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('#!AMR'))).container, 'amr');
   assert.strictEqual(Core.sniffFormat(new Uint8Array([0x30, 0x26, 0xB2, 0x75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])).container, 'asf');
   assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xF1, 0x50, 0x80])).container, 'aac-adts');
+  // ADTS 变体：F0/F8 层位同为 00，也曾被漏判成"未知格式"
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xF8, 0x50, 0x80])).container, 'aac-adts');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xF0, 0x50, 0x80])).container, 'aac-adts');
+  // MPEG 帧不得被误判为 ADTS
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xFA, 0x90, 0x00])).container, 'mp3');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xFB, 0x90, 0x00])).container, 'mp3');
   assert.strictEqual(Core.sniffFormat(new Uint8Array([0x1A, 0x45, 0xDF, 0xA3])).container, 'webm');
+  // SILK：真实微信语音是 \x02#!SILK_V3，magic 起始偏移不固定（曾因只查偏移 0/1 而漏判）
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0x02].concat(asciiBytes('#!SILK_V3')))).container, 'silk');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('#!SILK_V3'))).container, 'silk');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('caff'))).container, 'caf');
   assert.strictEqual(Core.sniffFormat(new Uint8Array(0)).container, 'empty');
   assert.strictEqual(Core.sniffFormat(new Uint8Array([1, 2, 3, 4])).container, 'unknown');
 });
@@ -556,6 +566,61 @@ test('decodeWav: 容忍未知块（LIST）与乱序块', () => {
 test('decodeWav: 非 RIFF / 截断输入抛错', () => {
   assert.throws(() => Core.decodeWav(new Uint8Array([1, 2, 3])));
   assert.throws(() => Core.decodeWav(new Uint8Array(100)));
+});
+
+/* ---------- WAV 格式白名单（防止压缩格式被当 PCM 解析成噪声） ---------- */
+
+/** 构造指定 WAVE 格式代码的 WAV（用于验证白名单拒绝行为） */
+function makeWavWithFormat(audioFormat, opts) {
+  opts = opts || {};
+  const rate = opts.rate || 8000, ch = opts.ch || 1;
+  const bits = opts.bits || 16, frames = opts.frames || 200;
+  const fmtSize = opts.fmtSize || 16;
+  const blockAlign = ch * (bits / 8);
+  const dataSize = frames * blockAlign;
+  const buf = new ArrayBuffer(44 + (fmtSize - 16) + dataSize);
+  const dv = new DataView(buf);
+  const wr = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  wr(0, 'RIFF'); dv.setUint32(4, buf.byteLength - 8, true); wr(8, 'WAVE');
+  wr(12, 'fmt '); dv.setUint32(16, fmtSize, true); dv.setUint16(20, audioFormat, true);
+  dv.setUint16(22, ch, true); dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * blockAlign, true); dv.setUint16(32, blockAlign, true);
+  dv.setUint16(34, bits, true);
+  // WAVE_FORMAT_EXTENSIBLE：真实格式写在子格式 GUID 的前 2 字节（body+24）
+  if (typeof opts.subFormat === 'number' && fmtSize >= 40) {
+    dv.setUint16(20 + 24, opts.subFormat, true);
+  }
+  const dataOff = 20 + fmtSize;
+  wr(dataOff, 'data'); dv.setUint32(dataOff + 4, dataSize, true);
+  for (let i = 0; i < dataSize; i++) dv.setUint8(dataOff + 8 + i, (i * 13) & 0xFF);
+  return new Uint8Array(buf);
+}
+
+test('decodeWav: 压缩格式必须报错，不得按 PCM 静默产出噪声', () => {
+  const bad = [
+    [6, 'A-law'], [7, 'μ-law'], [17, 'IMA ADPCM'], [2, 'ADPCM'],
+    [49, 'GSM 6.10'], [85, 'MPEG Layer III'], [65534, 'WAVE_FORMAT_EXTENSIBLE 但不完整']
+  ];
+  for (const [code] of bad) {
+    assert.throws(() => Core.decodeWav(makeWavWithFormat(code)), /不支持该压缩格式/,
+      '格式代码 0x' + code.toString(16) + ' 应当被拒绝');
+  }
+  // 错误信息里要带可读格式名，方便用户判断该怎么转
+  assert.throws(() => Core.decodeWav(makeWavWithFormat(6)), /A-law/);
+  assert.throws(() => Core.decodeWav(makeWavWithFormat(85)), /MPEG Layer III/);
+});
+
+test('decodeWav: PCM(1) / IEEE float(3) / 可扩展格式的 PCM 子格式仍可解析', () => {
+  const pcm = Core.decodeWav(makeWavWithFormat(1));
+  assert.strictEqual(pcm.channels[0].length, 200);
+  const flt = Core.decodeWav(makeWavWithFormat(3, { bits: 32 }));
+  assert.strictEqual(flt.channels[0].length, 200);
+  // WAVE_FORMAT_EXTENSIBLE：真实格式在子格式 GUID 前 2 字节，此处为 PCM(1)
+  const ext = Core.decodeWav(makeWavWithFormat(65534, { fmtSize: 40, subFormat: 1 }));
+  assert.strictEqual(ext.channels[0].length, 200);
+  // EXTENSIBLE 但若子格式是 A-law(6)，同样要被拒绝
+  assert.throws(() => Core.decodeWav(makeWavWithFormat(65534, { fmtSize: 40, subFormat: 6 })),
+    /不支持该压缩格式/);
 });
 
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

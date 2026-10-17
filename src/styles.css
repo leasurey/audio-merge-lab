@@ -238,6 +238,13 @@ li.seg:last-child { border-bottom: none; }
   color: var(--text-dim);
   margin-top: 2px;
 }
+/* 兜底解码结果存疑时的警示行（例如平台只解出几十毫秒噪声） */
+.seg-warn {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #f0d08a;
+  margin-top: 3px;
+}
 .seg-actions {
   display: flex;
   gap: 6px;

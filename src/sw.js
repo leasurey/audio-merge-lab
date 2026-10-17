@@ -3,7 +3,7 @@
  * 单文件应用，缓存清单极小。
  *
  * 缓存名由 tools/build.js 在构建时按 APP_VERSION 注入（源码中为占位符，
- * 构建后形如 audio-merge-lab-v0.2.3）——缓存名随版本变化，activate 时
+ * 构建后形如 audio-merge-lab-v0.3.5）——缓存名随版本变化，activate 时
  * 自动删除旧版本缓存，保证 PWA 用户能收到新构建（修复"发了新版却
  * 一直拿到旧文件"的问题）。
  */

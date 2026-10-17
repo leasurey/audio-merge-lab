@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.3.4';
+  var APP_VERSION = '0.3.5';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -679,8 +679,9 @@
     if (bytes.length >= 3 && ascii(0, 3) === 'ID3') {
       return { container: 'mp3', codec: 'mpeg-layer3', label: 'MP3（MPEG Layer III，含 ID3 标签）', advice: '' };
     }
-    // AAC 裸流（ADTS）同步字 0xFFF1 / 0xFFF9，必须先于通用 MPEG 判断
-    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] === 0xF1 || bytes[1] === 0xF9)) {
+    // AAC 裸流（ADTS）同步字 0xFFF + 层位 00（F0/F1/F8/F9 等），必须先于通用 MPEG 判断。
+    // 旧写法只认 F1/F9，会漏掉 F0/F8 一类变体，让它们落到"未知格式"拿不到转换建议
+    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xF6) === 0xF0) {
       return {
         container: 'aac-adts', codec: 'aac',
         label: 'AAC 裸流（ADTS）',
@@ -730,10 +731,23 @@
     if (bytes.length >= 4 && ascii(0, 4) === 'caff') {
       return { container: 'caf', codec: 'alac-or-pcm', label: 'CAF（Apple 音频容器）', advice: '浏览器不支持 CAF，建议转为 WAV / MP3' };
     }
-    if (ascii(0, 5).indexOf('SILK') !== -1 || ascii(1, 5).indexOf('SILK') !== -1) {
+    // SILK（微信语音）：真实文件常形如 \x02#!SILK_V3，也有直接从 #!SILK_V3 开始的，
+    // magic 起始偏移不固定 —— 因此在头部 16 字节里搜索，而不是只看固定偏移。
+    if (ascii(0, 16).indexOf('SILK') !== -1) {
       return { container: 'silk', codec: 'silk', label: 'SILK（微信语音格式）', advice: '微信语音为 SILK 编码，需先导出为 MP3 / WAV' };
     }
     return unknown;
+  }
+
+  /** WAVE 格式代码 → 可读名称（用于拒绝不支持的压缩格式时给出准确原因） */
+  var WAVE_FORMAT_NAMES = {
+    2: 'Microsoft ADPCM', 6: 'A-law', 7: 'μ-law', 17: 'IMA ADPCM',
+    49: 'GSM 6.10', 80: 'MPEG', 85: 'MPEG Layer III', 353: 'WMA',
+    65534: 'WAVE_FORMAT_EXTENSIBLE（子格式信息不完整）'
+  };
+  function waveFormatLabel(code) {
+    if (WAVE_FORMAT_NAMES[code]) return WAVE_FORMAT_NAMES[code] + '(0x' + code.toString(16) + ')';
+    return '未知格式代码 0x' + code.toString(16);
   }
 
   /**
@@ -784,6 +798,15 @@
     if (dataOff < 0) throw new Error('WAV 缺少 data 块');
     if (!fmt.numChannels || fmt.numChannels > 8) throw new Error('WAV 声道数异常: ' + fmt.numChannels);
     if (!fmt.sampleRate) throw new Error('WAV 采样率异常');
+    // 白名单：只接受未压缩 PCM(1) 与 IEEE float(3)。
+    // 其余编码（A-law 6 / μ-law 7 / ADPCM 2,17 / GSM 0x31 / MPEG-in-WAV 0x55 …）
+    // 的存储布局与 PCM 完全不同，若继续按 PCM 逐字节解析，产出的是满幅噪声而不是
+    // 错误——这种"看起来成功、实际是噪音"的结果会直接混进用户成品，必须显式拒绝。
+    if (fmt.audioFormat !== 1 && fmt.audioFormat !== 3) {
+      throw new Error('WAV 内置解析器不支持该压缩格式：' +
+        waveFormatLabel(fmt.audioFormat) + '（仅支持未压缩 PCM / IEEE float）。' +
+        '请用格式转换工具转为普通 WAV 或 MP3 后再导入');
+    }
     var bytesPerSample = fmt.bitsPerSample / 8;
     if ([1, 2, 3, 4, 8].indexOf(bytesPerSample) === -1) {
       throw new Error('WAV 位深不支持: ' + fmt.bitsPerSample);

@@ -79,6 +79,25 @@
 
   var FORMAT_LABELS = { wav: 'WAV', mp3: 'MP3', m4a: 'M4A' };
 
+  /**
+   * 嗅探用头部字节数：魔数识别只需要文件开头几十字节，但为兼容"信息块很长、
+   * 载体 magic 稍靠后"的情况留足余量。必须是**副本**，不能是与解码共享的视图。
+   */
+  var SNIFF_HEAD_BYTES = 65536;
+
+  /**
+   * 解码结果的最短有效时长（秒）。
+   *
+   * 实测依据（Edge/Chrome）：对"魔数合法但内容损坏"的文件，平台解码器既**不报错**，
+   * 又只解出极短的一小段——例如伪造 MPEG 头 + 垃圾数据会给出 1253 帧 / 0.026 秒。
+   * 这种结果完全不可用，但走的是成功分支（连承promise 都 resolve），
+   * 于是用户看到「已解码 0:00」，合并时又被 planMerge 静默跳过：那一段无声无息消失。
+   *
+   * 0.05 秒（约 2400 帧 @48kHz）足以覆盖这类垃圾解码，同时远离任何真实录音的
+   * 最短长度（正常使用不会出现 50 毫秒以内的音频片段）。
+   */
+  var MIN_VALID_SEC = 0.05;
+
   /* ---------------- DOM 助手 ---------------- */
   function $(id) { return document.getElementById(id); }
 
@@ -91,7 +110,11 @@
 
   function nextFrame() {
     return new Promise(function (r) {
-      if (window.requestAnimationFrame) requestAnimationFrame(function () { r(); });
+      /* 后台标签页里 rAF 完全停摆——切后台/锁屏时合并会卡住不动，直到回到前台。
+       * setTimeout 在后台虽被节流（约 1 秒/次）但仍能推进，让合并不至于纹丝不动。
+       * 前台仍走 rAF（与屏幕刷新同步，进度更平滑）。 */
+      if (typeof document !== 'undefined' && document.hidden) setTimeout(r, 0);
+      else if (window.requestAnimationFrame) requestAnimationFrame(function () { r(); });
       else setTimeout(r, 16);
     });
   }
@@ -373,7 +396,19 @@
     try {
       var buf = await readAsArrayBuffer(seg.blob);
       await getCtx();
-      var bytes = new Uint8Array(buf);
+
+      /* ⚠️ 关键约定：decodeAudioData 会接管（detach）传入的 ArrayBuffer，
+       * 而且**失败时也 detach**（Chrome/WebKit 实测：成功/失败两种路径事后
+       * byteLength 均为 0）。因此任何"解码之后还要用的字节"都必须是独立副本，
+       * 不能直接持有同一个 buffer 的视图——否则降级链拿到的永远是 0 字节，
+       * 会被误判成"空文件（0 字节）"。
+       *
+       * 做法：解码前先用 slice 复制一份头部（≤64KB）用于嗅探；只有当嗅探结果
+       * 表明有对应内置解析器时，才在失败后重新读一次全文交给兜底解析器。
+       * 这样成功路径零额外开销，失败路径也只有一次按需重读。 */
+      var headLen = Math.min(buf.byteLength, SNIFF_HEAD_BYTES);
+      var headBytes = new Uint8Array(buf.slice(0, headLen)); // slice = 独立副本
+
       var audioBuf = null;
       var primaryErr = null;
       try {
@@ -384,9 +419,27 @@
       // 解码期间该片段可能已被移除
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
 
+      /* 部分损坏/不被支持的文件，平台解码器会"成功"返回一个 0 帧的 AudioBuffer
+       * （Chrome/Edge 实测：魔数合法但内容无效的 MP3 → duration 0、不报错）。
+       * 若按成功处理，合并时该段会被 planMerge 静默跳过——用户那一段无声无息消失，
+       * 全是这类文件时还会抛出内部的 "planMerge: 所有片段均为空"。因此必须当失败，
+       * 并继续走降级链让内置解析器再试一次。 */
+      var platformSuspicious = false;
+      if (audioBuf && audioBuf.length === 0) {
+        primaryErr = new Error('平台解码器返回了 0 帧音频（文件很可能损坏或不完整）');
+        audioBuf = null;
+        platformSuspicious = true;
+      } else if (audioBuf && audioBuf.duration < MIN_VALID_SEC) {
+        primaryErr = new Error('平台解码器只解出 ' + (audioBuf.duration * 1000).toFixed(0) +
+          ' 毫秒音频（文件很可能损坏或不完整）');
+        audioBuf = null;
+        platformSuspicious = true;
+      }
+
       if (audioBuf) {
         seg.pcm = audioBufferToPcm(audioBuf);
         seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
+        seg.warn = null; // 平台这次解好了，清掉此前可能存在的"结果存疑"警示
         seg.duration = audioBuf.duration;
         seg.sampleRate = audioBuf.sampleRate;
         seg.channels = audioBuf.numberOfChannels;
@@ -400,15 +453,29 @@
       }
 
       // ---- 降级链 ----
-      var info = AudioCore.sniffFormat(bytes);
+      // 注意：此处只能用 headBytes（独立副本）。传给平台解码器的那份 buf 已在上一步
+      // 被 detach，任何基于它的视图长度都会变成 0。
+      var info = AudioCore.sniffFormat(headBytes);
       seg.sniff = info;
       var fb = null, fbErr = null;
       try {
-        fb = await fallbackDecode(bytes, info);
+        if (info.container === 'wav' || info.container === 'mp3') {
+          // 内置解析器需要完整文件；平台那一份已被 detach，这里按需重读
+          var fullBuf = await readAsArrayBuffer(seg.blob);
+          fb = await fallbackDecode(new Uint8Array(fullBuf), info);
+        }
       } catch (e2) {
         fbErr = e2;
       }
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+      // 兜底解析器同样可能产出 0 帧或垃圾短解（例如 mpg123 空解），一样按失败处理，
+      // 绝不允许"静默消失"或"只有几十毫秒"的片段混进列表。
+      var fbSec = fb ? AudioCore.pcmDurationSec(fb.pcm) : 0;
+      if (fb && fbSec < MIN_VALID_SEC) {
+        fb = null;
+        fbErr = new Error('内置解析器只解出 ' + (fbSec * 1000).toFixed(0) +
+          ' 毫秒音频，文件很可能损坏');
+      }
       if (fb) {
         seg.pcm = fb.pcm;
         seg.audioBuffer = null; // 无 AudioBuffer，M4A 路径会按 PCM 重建
@@ -417,10 +484,22 @@
         seg.channels = fb.pcm.channels.length;
         seg.decoding = false;
         seg.usedFallback = true;
+        // 平台只解出一小段（典型：损坏 MP3 被解成几十毫秒噪声）时，内置解析器的结果
+        // 未必可信——它可能是把垃圾数据硬解出来的。此时仍采用其输出（否则那段会静默消失），
+        // 但必须显式标注，让用户试听确认后再决定是否留下。
+        seg.warn = platformSuspicious
+          ? '平台解码结果异常短，内容由内置解码器还原，请试听确认后再合并'
+          : null;
+        var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG' : 'WAV');
         renderList();
-        setStatus('「' + seg.name + '」平台解码器不支持，已用内置解码器（' +
-          (fb.decoder === 'mpg123' ? 'MP3/MPEG' : 'WAV') + '）解码完成：' +
-          fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
+        if (platformSuspicious) {
+          setStatus('「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
+            '）解出 ' + fmtTime(seg.duration) +
+            '，请试听确认内容是否完整，若不满意可删除该片段');
+        } else {
+          setStatus('「' + seg.name + '」平台解码器不支持，已用内置解码器（' + label +
+            '）解码完成：' + fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
+        }
         return;
       }
       // 无内置解析器：抛出带格式信息与建议的错误
@@ -450,6 +529,12 @@
   }
 
   function removeSegment(id) {
+    // 合并进行中禁止增删：streamMerge 持有的是开始时捕获的片段数组，
+    // 此时删除只会从界面上消失，结果里仍然包含——必须先取消合并
+    if (state.busy) {
+      setStatus('合并进行中：请先取消合并，再调整片段列表', true);
+      return;
+    }
     var seg = state.segments.find(function (s) { return s.id === id; });
     if (seg && state.playingId === id) stopSegPlayback();
     if (seg && seg.url) { URL.revokeObjectURL(seg.url); seg.url = null; }
@@ -458,6 +543,10 @@
   }
 
   function moveSegment(id, dir) {
+    if (state.busy) { // 同 removeSegment：合并中调整顺序不影响已捕获的合并数组
+      setStatus('合并进行中：请先取消合并，再调整片段列表', true);
+      return;
+    }
     var idx = state.segments.findIndex(function (s) { return s.id === id; });
     if (idx < 0) return;
     var target = idx + dir;
@@ -648,6 +737,7 @@
           (seg.channels === 1 ? '单声道' : seg.channels + ' 声道');
       }
       info.appendChild(el('div', 'seg-meta', meta));
+      if (seg.warn) info.appendChild(el('div', 'seg-warn', '⚠ ' + seg.warn));
       li.appendChild(info);
 
       var actions = el('div', 'seg-actions');
@@ -1224,6 +1314,9 @@
           '建议改用 MP3（体积约为 1/10），或分段合并。\n\n仍要继续吗？'
         );
         if (!iosOk) {
+          // 弹窗被拒：必须关闭已打开的 OPFS 写句柄，否则留下未关闭的 writable
+          // 和孤儿文件（同名文件下次可能因句柄未释放而打不开，被迫退回内存模式）
+          if (sink) await sink.abort();
           setStatus('已取消合并（iOS 内存保护）');
           return;
         }
@@ -1235,6 +1328,7 @@
           '继续可能因内存不足导致页面重载。\n\n建议：分段合并、改用 MP3 输出，或换用支持 OPFS 的浏览器（Chrome/Edge）。\n\n仍要继续吗？'
         );
         if (!proceed) {
+          if (sink) await sink.abort(); // 同上：关闭写句柄，避免孤儿文件与句柄滞留
           setStatus('已取消合并（内存估算超限）');
           return;
         }
@@ -1334,9 +1428,15 @@
 
     // 优先走系统分享（Android Chrome / iOS 15+ Safari 支持分享文件）
     try {
-      var resp = await fetch(url);
-      var blob = await resp.blob();
-      var file = new File([blob], filename, { type: mime });
+      /* 直接用已有的 mergedBlob 构造 File，不再 fetch(blobURL) → resp.blob()：
+       * 那条路会把整个结果在内存里再物化一份（大文件下白吃一份内存，正是
+       * V0.3.4 在 iOS 上修过的那类问题）。注意 OPFS 落盘的 File 没有 MIME
+       * type（getFile() 返回 type 为空），必须包一层补上，否则部分系统的
+       * canShare/share 会拒绝；内存回落与 M4A 路径的 Blob 自带 type。 */
+      var src = state.mergedBlob;
+      var file = (src instanceof File && src.type)
+        ? src
+        : new File([src], filename, { type: mime });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: '合并录音' });
         return;
@@ -1398,6 +1498,10 @@
     });
 
     $('btnClear').addEventListener('click', function () {
+      if (state.busy) { // 合并中清空列表同样不影响进行中的合并，只会造成困惑
+        setStatus('合并进行中：请先取消合并，再清空片段列表', true);
+        return;
+      }
       stopSegPlayback();
       decodeQueue = [];
       state.segments.forEach(function (s) {

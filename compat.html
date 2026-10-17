@@ -368,7 +368,8 @@
     if (!bytes || bytes.length === 0) return '空文件（0 字节）';
     if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WAVE') return 'WAV（PCM 音频）';
     if (bytes.length >= 3 && ascii(0, 3) === 'ID3') return 'MP3（MPEG Layer III，含 ID3 标签）';
-    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] === 0xF1 || bytes[1] === 0xF9)) return 'AAC 裸流（ADTS）';
+    // ADTS：同步字 0xFFF + 层位 00（含 F0/F1/F8/F9 变体），须先于 MPEG 判断
+    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xF6) === 0xF0) return 'AAC 裸流（ADTS）';
     if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0 && ((bytes[1] >> 1) & 3) !== 0) {
       // MPEG layer 位：1=Layer III，2=Layer II，3=Layer I
       var layers = ['', 'III', 'II', 'I'];
@@ -380,7 +381,8 @@
     if (bytes.length >= 5 && ascii(0, 5) === '#!AMR') return 'AMR（通话录音常见格式）';
     if (bytes.length >= 4 && bytes[0] === 0x1A && bytes[1] === 0x45 && bytes[2] === 0xDF && bytes[3] === 0xA3) return 'WebM';
     if (bytes.length >= 16 && bytes[0] === 0x30 && bytes[1] === 0x26 && bytes[2] === 0xB2 && bytes[3] === 0x75) return 'WMA（ASF 容器）';
-    if (ascii(0, 5).indexOf('SILK') !== -1 || ascii(1, 5).indexOf('SILK') !== -1) return 'SILK（微信语音）';
+    // SILK：真实文件常为 \x02#!SILK_V3，起始偏移不固定，故在头部 16 字节内搜索
+    if (ascii(0, 16).indexOf('SILK') !== -1) return 'SILK（微信语音）';
     return '未知格式';
   }
 
