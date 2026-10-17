@@ -52,7 +52,10 @@ python test/verify_wav.py   # Python wave 模块交叉校验 WAV 产物
 │   ├─ sw.js               Service Worker（离线缓存，仅真实 http(s) 部署时注册）
 │   └─ vendor\lame.min.js  MP3 编码器（官方文件，SHA-1 已校验，见 THIRD-PARTY-NOTICES.md）
 ├─ index.template.html     页面骨架（含 /*VENDOR*/ /*STYLES*/ /*CORE*/ /*APP*/ 占位符）
-├─ tools\build.js          构建：内联为单文件 dist/index.html + 复制 PWA 资源 + 生成 PNG 图标
+├─ tools\
+│   ├─ build.js              构建：内联为单文件 dist/index.html + 复制 PWA 资源 + 生成 PNG 图标
+│   ├─ github-create-repo.js 维护者工具：用本机 Edge 会话经网页 UI 创建 GitHub 仓库
+│   └─ github-debug-page.js  维护者工具：浏览器页面结构诊断（选择器调试）
 ├─ test\                   单元测试 + MP3 功能测试 + Python 交叉校验脚本
 ├─ capacitor.config.json   Capacitor 配置（webDir 指向 dist）
 ├─ package.json            构建/测试脚本 + Capacitor 8.5.3 依赖声明
@@ -153,6 +156,22 @@ iOS 后台持续录音：Xcode → Signing & Capabilities → Background Modes �
 - MP3 编码在主线程分块执行（每块间让出），长文件耗时仍较明显（10 分钟音频约需 1–2 分钟）
 - 未做裁剪、变速、交叉淡入淡出；只做顺序拼接 + 间隔 + 淡变 + 归一化
 - `dist/` 不随仓库分发，克隆后需自行 `node tools/build.js` 生成
+
+## 维护者工具
+
+`tools/` 下除构建脚本外，还有两个 GitHub 建库期使用的浏览器自动化工具（依赖 `playwright-core` 与本机 Edge 的已登录会话，cookie 不离开本机）：
+
+```bash
+npm i -g playwright-core    # 或设 NODE_PATH 指向其安装目录
+
+# 建库（首次）：网页 UI 创建仓库，含失败诊断与 JS 提交兜底
+node tools/github-create-repo.js
+
+# 诊断：dump 指定页面的表单元素与选择器信息
+node tools/github-debug-page.js https://github.com/new
+```
+
+仓库建好后，日常更新就是标准 git 流程：改代码 → `node tools/build.js` → `npm test` → `git commit` → `git push`（凭据由系统 Git Credential Manager 管理）。
 
 ## 测试
 
