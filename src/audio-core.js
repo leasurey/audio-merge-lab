@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.2.4';
+  var APP_VERSION = '0.3.0';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -174,68 +174,269 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * 合并主流程
+   * 流式合并基础件（V0.3.0）
+   *
+   * 背景：长音频合并的内存瓶颈不在算法而在"整体物化"——旧 concatSegments
+   * 先为每段建全量 conform 拷贝，再建全量输出，两个 40 分钟立体声文件
+   * 峰值可超 4GB（用户实测），iOS 直接杀页面。新方案：
+   *   1. createSegmentConverter：无状态分帧转换器，按绝对输出帧号计算
+   *      源位置——可分块调用且块边界不影响结果（与一次性转换逐位一致）；
+   *   2. planMerge：先算总帧数（WAV 头部/进度都靠它）；
+   *   3. concatSegments 本身也改为单遍直写输出（去掉 conform 中间层）。
    * ------------------------------------------------------------------ */
 
-  /**
-   * 合并多段 PCM。
-   * @param {Array<{name:string, pcm:Object}>} segments 按顺序排列的片段
-   * @param {Object} [options] 覆盖 DEFAULTS
-   * @returns {{sampleRate:number, channels:Float32Array[]}} 合并后的 PCM
-   */
-  function concatSegments(segments, options) {
+  /** 合并选项归一化（DEFAULTS + 用户覆盖） */
+  function mergeOptions(options) {
     var opts = {};
     var k;
     for (k in DEFAULTS) opts[k] = DEFAULTS[k];
     for (k in (options || {})) {
       if (Object.prototype.hasOwnProperty.call(options || {}, k)) opts[k] = options[k];
     }
+    return opts;
+  }
 
-    if (!segments || segments.length === 0) {
-      throw new Error('concatSegments: 片段列表为空');
+  /**
+   * 一段源 PCM 在目标采样率下的输出帧数。
+   * 与 conformPcm + resampleChannel 的长度计算保持一致；
+   * 空片段返回 0（调用方按"跳过空片段"处理）。
+   */
+  function conformedFrameCount(srcPcm, targetRate) {
+    var srcLen = srcPcm.channels[0].length;
+    if (srcLen === 0) return 0;
+    if (srcPcm.sampleRate === targetRate) return srcLen;
+    return Math.max(1, Math.round(srcLen * (targetRate / srcPcm.sampleRate)));
+  }
+
+  /**
+   * 创建单段转换器：把源 PCM 的任意输出帧区间 [o0, o1) 转换为
+   * 目标采样率 / 声道数 / 增益 / 淡变后的采样值。
+   *
+   * 无状态设计：输出帧 n 的源位置 = n / ratio（ratio = targetRate/srcRate），
+   * 与一次性重采样逐位一致，因此分块调用不产生接缝。
+   *
+   * @param {Object} srcPcm 源 PCM（只读，绝不修改）
+   * @param {Object} opts
+   *   - targetRate     目标采样率
+   *   - targetChannels 目标声道数
+   *   - gain           统一增益（归一化用，默认 1）
+   *   - fadeMs         首尾淡变毫秒数（默认 0）
+   *   - int16          true 时输出 Int16（钳位+缩放公式同 floatToInt16）；
+   *                    false 时输出 Float32（默认）
+   * @returns {{srcRate:number, outFrames:number, convert:Function}}
+   *   convert(o0, o1, outChs) → 实际转换帧数；outChs[c] 为长度 ≥ (o1-o0) 的TypedArray
+   */
+  function createSegmentConverter(srcPcm, opts) {
+    var src = srcPcm.channels;
+    var srcLen = src[0].length;
+    var srcRate = srcPcm.sampleRate;
+    var targetRate = opts.targetRate;
+    var targetChannels = opts.targetChannels;
+    var gain = typeof opts.gain === 'number' ? opts.gain : 1;
+    var int16 = !!opts.int16;
+    var ratio = targetRate / srcRate;
+    var outFrames = conformedFrameCount(srcPcm, targetRate);
+    var fadeLen = Math.min(
+      Math.floor((opts.fadeMs / 1000) * targetRate),
+      Math.floor(outFrames / 2)
+    );
+    var scratch = new Float32Array(src.length); // 每帧各源声道插值
+
+    function emit(v, out, n) {
+      if (!int16) { out[n] = v; return; }
+      v = v < -1 ? -1 : (v > 1 ? 1 : v);
+      out[n] = v < 0 ? v * 0x8000 : v * 0x7fff;
     }
 
-    var conformed = [];
-    var i, c;
+    function convert(o0, o1, outChs) {
+      var frames = o1 - o0;
+      if (frames <= 0 || outFrames === 0) return 0;
+      var n, c, abs, pos, i0, t, v, g, ch;
+      for (n = 0; n < frames; n++) {
+        abs = o0 + n;
+        pos = abs / ratio;
+        i0 = Math.floor(pos);
+        var hold = i0 >= srcLen - 1;
+        if (hold) i0 = srcLen - 1;
+        t = hold ? 0 : pos - i0;
+        for (c = 0; c < src.length; c++) {
+          ch = src[c];
+          scratch[c] = (hold || srcLen < 2) ? ch[i0] : ch[i0] * (1 - t) + ch[i0 + 1] * t;
+        }
+        // 淡变增益（与 applyFadeInOut 同一公式：首尾各 fadeLen 帧线性斜坡）
+        g = 1;
+        if (fadeLen > 0) {
+          if (abs < fadeLen) g = abs / fadeLen;
+          else if (abs >= outFrames - fadeLen) g = (outFrames - 1 - abs) / fadeLen;
+        }
+        if (targetChannels === 1) {
+          var m = 0;
+          for (c = 0; c < src.length; c++) m += scratch[c] / src.length;
+          emit(m * g * gain, outChs[0], n);
+        } else if (src.length === targetChannels) {
+          for (c = 0; c < targetChannels; c++) emit(scratch[c] * g * gain, outChs[c], n);
+        } else if (src.length === 1) {
+          v = scratch[0] * g * gain;
+          emit(v, outChs[0], n);
+          emit(v, outChs[1], n);
+        } else {
+          for (c = 0; c < targetChannels; c++) emit(scratch[c] * g * gain, outChs[c], n);
+        }
+      }
+      return frames;
+    }
+
+    return { srcRate: srcRate, outFrames: outFrames, convert: convert };
+  }
+
+  /**
+   * 单段在淡变后的峰值（不含归一化增益）。
+   *
+   * 流式合并时用于预先计算全局增益：旧实现是"先拼接再 peakNormalize"，
+   * 而拼接后的全局峰值 = 各段淡变后峰值的最大者（静音间隔不贡献峰值），
+   * 因此两路径等值——这里用只读扫描完成，不分配任何大数组。
+   */
+  function segmentPeakAfterFade(srcPcm, targetRate, targetChannels, fadeMs) {
+    var src = srcPcm.channels;
+    var srcLen = src[0].length;
+    if (srcLen === 0) return 0;
+    var ratio = targetRate / srcPcm.sampleRate;
+    var outFrames = conformedFrameCount(srcPcm, targetRate);
+    var fadeLen = Math.min(
+      Math.floor((fadeMs / 1000) * targetRate),
+      Math.floor(outFrames / 2)
+    );
+    var peak = 0;
+    var n, c, pos, i0, t, v, g, ch, m;
+    for (n = 0; n < outFrames; n++) {
+      g = 1;
+      if (fadeLen > 0) {
+        if (n < fadeLen) g = n / fadeLen;
+        else if (n >= outFrames - fadeLen) g = (outFrames - 1 - n) / fadeLen;
+      }
+      pos = n / ratio;
+      i0 = Math.floor(pos);
+      var hold = i0 >= srcLen - 1;
+      if (hold) i0 = srcLen - 1;
+      t = hold ? 0 : pos - i0;
+      for (c = 0; c < src.length; c++) {
+        ch = src[c];
+        v = (hold || srcLen < 2) ? ch[i0] : ch[i0] * (1 - t) + ch[i0 + 1] * t;
+        if (targetChannels === 1) {
+          if (c === 0) m = 0;
+          m += v / src.length;
+          if (c === src.length - 1) { v = m; } else { continue; }
+        } else if (src.length > 1 && c >= targetChannels) {
+          continue; // 多声道目标只取前 targetChannels 条
+        }
+        v = Math.abs(v * g);
+        if (v > peak) peak = v;
+      }
+    }
+    return peak;
+  }
+
+  /**
+   * 合并计划：各非空片段的输出帧数、间隔帧数、总帧数。
+   * 与 concatSegments 的长度语义一致（跳过空片段、段间插间隔）。
+   * @returns {{targetSampleRate, targetChannels, gapFrames,
+   *            parts:Array<{index:number, outFrames:number}>, totalFrames}}
+   */
+  function planMerge(segments, options) {
+    var opts = mergeOptions(options);
+    if (!segments || segments.length === 0) {
+      throw new Error('planMerge: 片段列表为空');
+    }
+    var parts = [];
+    var i;
     for (i = 0; i < segments.length; i++) {
       var seg = segments[i];
       if (!seg || !seg.pcm || !seg.pcm.channels || seg.pcm.channels.length === 0) {
-        throw new Error('concatSegments: 第 ' + (i + 1) + ' 个片段数据无效');
+        throw new Error('planMerge: 第 ' + (i + 1) + ' 个片段数据无效');
       }
-      var pcm = conformPcm(seg.pcm, opts.targetSampleRate, opts.targetChannels);
-      if (pcm.channels[0].length === 0) continue; // 跳过空片段
-      if (opts.fadeMs > 0) {
-        for (c = 0; c < pcm.channels.length; c++) {
-          applyFadeInOut(pcm.channels[c], pcm.sampleRate, opts.fadeMs);
-        }
-      }
-      conformed.push(pcm);
+      var frames = conformedFrameCount(seg.pcm, opts.targetSampleRate);
+      if (frames === 0) continue; // 跳过空片段（与 concatSegments 一致）
+      parts.push({ index: i, outFrames: frames });
     }
-
-    if (conformed.length === 0) {
-      throw new Error('concatSegments: 所有片段均为空');
+    if (parts.length === 0) {
+      throw new Error('planMerge: 所有片段均为空');
     }
+    var gapFrames = Math.round(opts.gapSec * opts.targetSampleRate);
+    var totalFrames = 0;
+    for (i = 0; i < parts.length; i++) totalFrames += parts[i].outFrames;
+    totalFrames += gapFrames * (parts.length - 1);
+    return {
+      targetSampleRate: opts.targetSampleRate,
+      targetChannels: opts.targetChannels,
+      gapFrames: gapFrames,
+      parts: parts,
+      totalFrames: totalFrames
+    };
+  }
 
-    var gapLen = Math.round(opts.gapSec * opts.targetSampleRate);
-    var totalLen = 0;
-    for (i = 0; i < conformed.length; i++) totalLen += conformed[i].channels[0].length;
-    totalLen += gapLen * (conformed.length - 1);
+  /* ------------------------------------------------------------------ *
+   * 合并主流程
+   * ------------------------------------------------------------------ */
+
+  /**
+   * 合并多段 PCM（单遍直写：输出只分配一次，逐段转换填入，
+   * 不再为每段建立全量 conform 中间拷贝）。
+   *
+   * @param {Array<{name:string, pcm:Object}>} segments 按顺序排列的片段
+   * @param {Object} [options] 覆盖 DEFAULTS
+   * @returns {{sampleRate:number, channels:Float32Array[]}} 合并后的 PCM
+   */
+  function concatSegments(segments, options) {
+    var opts = mergeOptions(options);
+    var plan = planMerge(segments, opts);
 
     var out = [];
-    for (c = 0; c < opts.targetChannels; c++) out.push(new Float32Array(totalLen));
+    var c, i;
+    for (c = 0; c < opts.targetChannels; c++) out.push(new Float32Array(plan.totalFrames));
 
-    var offset = 0;
-    for (i = 0; i < conformed.length; i++) {
-      var p = conformed[i];
-      for (c = 0; c < opts.targetChannels; c++) out[c].set(p.channels[c], offset);
-      offset += p.channels[0].length + gapLen;
-    }
-
-    var result = { sampleRate: opts.targetSampleRate, channels: out };
+    // 归一化全局增益：等价于旧实现"拼接后 peakNormalize"
+    // （拼接后峰值 = 各段淡变后峰值的最大者）
+    var gain = 1;
     if (opts.normalize) {
-      result = peakNormalize(result, opts.normalizeTarget, opts.maxNormalizeGain);
+      var peak = 0;
+      for (i = 0; i < plan.parts.length; i++) {
+        var pk = segmentPeakAfterFade(
+          segments[plan.parts[i].index].pcm,
+          plan.targetSampleRate, plan.targetChannels, opts.fadeMs
+        );
+        if (pk > peak) peak = pk;
+      }
+      if (peak > 0 && isFinite(peak)) {
+        gain = Math.min(opts.normalizeTarget / peak, opts.maxNormalizeGain);
+      }
     }
-    return result;
+
+    var CHUNK = 65536; // 转换块大小（仅影响速度，不影响结果）
+    var offset = 0;
+    for (i = 0; i < plan.parts.length; i++) {
+      var part = plan.parts[i];
+      var conv = createSegmentConverter(segments[part.index].pcm, {
+        targetRate: plan.targetSampleRate,
+        targetChannels: plan.targetChannels,
+        gain: gain,
+        fadeMs: opts.fadeMs,
+        int16: false
+      });
+      var done = 0;
+      while (done < part.outFrames) {
+        var end = Math.min(done + CHUNK, part.outFrames);
+        // convert 的 outChs 索引是窗口内局部索引——传输出数组对应区段的子视图
+        var views = [];
+        for (c = 0; c < opts.targetChannels; c++) {
+          views.push(out[c].subarray(offset + done, offset + end));
+        }
+        conv.convert(done, end, views);
+        done = end;
+      }
+      // 段间间隔：输出数组零初始化，天然就是静音，无需显式写
+      offset += part.outFrames + plan.gapFrames;
+    }
+    return { sampleRate: plan.targetSampleRate, channels: out };
   }
 
   /* ------------------------------------------------------------------ *
@@ -243,33 +444,28 @@
    * ------------------------------------------------------------------ */
 
   /**
-   * 将 PCM 编码为 WAV 字节流。
-   * @param {Object} pcm
+   * WAV 文件头（44 字节 RIFF/WAVE）。
+   * 流式合并时先写头部再写数据——总帧数在合并前即可由 planMerge 算出。
+   * @param {number} numFrames 每声道帧数
+   * @param {number} sampleRate 采样率
+   * @param {number} numChannels 声道数
    * @param {number} [bitDepth=16] 8 / 16 / 24 / 32
-   * @returns {Uint8Array}
+   * @returns {Uint8Array} 长度 44
    */
-  function encodeWav(pcm, bitDepth) {
+  function buildWavHeader(numFrames, sampleRate, numChannels, bitDepth) {
     bitDepth = bitDepth || 16;
     if ([8, 16, 24, 32].indexOf(bitDepth) === -1) {
-      throw new Error('encodeWav: 不支持的位深 ' + bitDepth);
+      throw new Error('buildWavHeader: 不支持的位深 ' + bitDepth);
     }
-    var numChannels = pcm.channels.length;
-    var sampleRate = pcm.sampleRate;
-    var numFrames = pcm.channels[0].length;
     var bytesPerSample = bitDepth / 8;
     var blockAlign = numChannels * bytesPerSample;
     var dataSize = numFrames * blockAlign;
 
-    var buffer = new ArrayBuffer(44 + dataSize);
+    var buffer = new ArrayBuffer(44);
     var view = new DataView(buffer);
-
     function writeStr(off, s) {
       for (var i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
     }
-    function clamp(v) {
-      return v < -1 ? -1 : (v > 1 ? 1 : v);
-    }
-
     writeStr(0, 'RIFF');
     view.setUint32(4, 36 + dataSize, true); // 文件总大小 - 8
     writeStr(8, 'WAVE');
@@ -283,6 +479,32 @@
     view.setUint16(34, bitDepth, true);
     writeStr(36, 'data');
     view.setUint32(40, dataSize, true);
+    return new Uint8Array(buffer);
+  }
+
+  /**
+   * 将 PCM 编码为 WAV 字节流。
+   * @param {Object} pcm
+   * @param {number} [bitDepth=16] 8 / 16 / 24 / 32
+   * @returns {Uint8Array}
+   */
+  function encodeWav(pcm, bitDepth) {
+    bitDepth = bitDepth || 16;
+    var numChannels = pcm.channels.length;
+    var sampleRate = pcm.sampleRate;
+    var numFrames = pcm.channels[0].length;
+    var header = buildWavHeader(numFrames, sampleRate, numChannels, bitDepth);
+    var bytesPerSample = bitDepth / 8;
+    var blockAlign = numChannels * bytesPerSample;
+    var dataSize = numFrames * blockAlign;
+
+    var buffer = new ArrayBuffer(44 + dataSize);
+    new Uint8Array(buffer, 0, 44).set(header);
+    var view = new DataView(buffer);
+
+    function clamp(v) {
+      return v < -1 ? -1 : (v > 1 ? 1 : v);
+    }
 
     var off = 44;
     var c, i, v;
@@ -433,6 +655,11 @@
     pcmDurationSec: pcmDurationSec,
     pickTargetRate: pickTargetRate,
     encodeWav: encodeWav,
+    buildWavHeader: buildWavHeader,
+    conformedFrameCount: conformedFrameCount,
+    createSegmentConverter: createSegmentConverter,
+    segmentPeakAfterFade: segmentPeakAfterFade,
+    planMerge: planMerge,
     floatToInt16: floatToInt16,
     pcmToInt16Channels: pcmToInt16Channels,
     encodeMP3: encodeMP3

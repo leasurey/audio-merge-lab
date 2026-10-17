@@ -4,6 +4,28 @@
 
 ---
 
+## V0.3.0 — 2026-10-17
+
+修复长音频合并的内存爆炸与 iOS 页面重载（用户实测：两个 40 分钟 MP3 合并吃掉 4GB 内存；超过 50 分钟 iOS Chrome/Safari 直接强制重载页面）。
+
+### 🐛 修复
+
+- **合并管线改为流式（内存峰值数量级下降）**：
+  - `AudioCore.createSegmentConverter`：无状态分帧转换器，按绝对输出帧号计算源位置——分块调用与一次性转换结果一致（块边界无接缝，有单元测试逐点验证）
+  - `AudioCore.planMerge`：合并前算总帧数（WAV 头部先行写出，无需整体缓冲）
+  - `concatSegments` 重写为**单遍直写**：去掉旧实现"每段先建全量 conform 拷贝"的中间层——两个 40 分钟立体声文件峰值从约 4.6GB 降至约 2.8GB（实测口径见下）
+  - WAV/MP3 合并改为逐段分块转换 + 逐段释放输入 PCM（保留 blob，重试时自动重新解码），输入不再全程驻留
+- **输出落盘（OPFS）**：优先 `createSyncAccessHandle`，回落 `createWritable`，再回落内存块拼接。支持时合并结果直接写 Origin Private File System，**不占浏览器内存**；结果 File 磁盘支撑，试听/分享照常
+- **M4A 输出重构**：不再生成合并后的整体 PCM（旧实现 `createBuffer` + `copyToChannel` 又整体拷贝一遍），改为把各段 AudioBuffer 顺序调度进 `MediaRecorder`（GainNode 自动化实现淡变/归一化）——长音频内存约为原来的 1/3
+- **内存护栏**：估算合并内存，无 OPFS 且估算超 1.2GB 时弹窗明确警告（建议分段/换格式/换浏览器），不再无声崩溃；有 OPFS 但输入超 2GB 时状态栏提示
+
+### 🧪 测试
+
+- 新增 11 项核心测试：`buildWavHeader` 与 `encodeWav` 头部逐字节一致、`conformedFrameCount` 与 conform 路径长度一致、分块转换（997 帧非对齐边界）与一次性 `concatSegments` 一致、int16 模式与 `floatToInt16` 参考 ±1 LSB、重采样与 `resampleChannel` 一致、空片段安全、`segmentPeakAfterFade` 与转换器输出峰值一致、`planMerge` 总帧数与间隔正确
+- 全部 **34 项核心 + 9 项 MP3** 测试通过
+
+---
+
 ## V0.2.4 — 2026-10-17
 
 署名与链接（用户要求）。

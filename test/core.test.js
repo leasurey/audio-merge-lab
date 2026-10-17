@@ -269,4 +269,183 @@ test('集成: 生成合并 WAV + 元数据（供 test/verify_wav.py 校验）', 
   console.log('     写出 ' + wavPath + ' (' + (wav.length / 1024).toFixed(0) + ' KB)');
 });
 
+/* ---------- V0.3.0 流式合并基础件 ---------- */
+
+function sine(rate, freq, amp, len) {
+  const ch = new Float32Array(len);
+  for (let i = 0; i < len; i++) ch[i] = amp * Math.sin(2 * Math.PI * freq * i / rate);
+  return ch;
+}
+
+test('buildWavHeader: 与 encodeWav 头部逐字节一致', () => {
+  const pcm = { sampleRate: 48000, channels: [new Float32Array(100), new Float32Array(100)] };
+  const wav = Core.encodeWav(pcm, 16);
+  const header = Core.buildWavHeader(100, 48000, 2, 16);
+  assert.strictEqual(header.length, 44);
+  assert.deepStrictEqual(Array.from(header), Array.from(wav.subarray(0, 44)));
+  const view = new DataView(header.buffer);
+  assert.strictEqual(view.getUint32(4, true), 36 + 400); // 文件大小 - 8
+  assert.strictEqual(view.getUint32(24, true), 48000);
+  assert.strictEqual(view.getUint32(28, true), 48000 * 4); // 字节率
+  assert.strictEqual(view.getUint16(32, true), 4);        // 块对齐
+});
+
+test('buildWavHeader: 不支持的位深抛错', () => {
+  assert.throws(() => Core.buildWavHeader(10, 44100, 2, 12));
+});
+
+test('conformedFrameCount: 与 conformPcm+resampleChannel 长度一致', () => {
+  const cases = [[100, 8000, 44100], [44100, 44100, 44100], [48000, 48000, 44100], [1, 48000, 44100], [0, 44100, 44100]];
+  for (const [len, from, to] of cases) {
+    const pcm = { sampleRate: from, channels: [new Float32Array(len)] };
+    const expected = Core.conformPcm(pcm, to, 1).channels[0].length;
+    assert.strictEqual(Core.conformedFrameCount(pcm, to), expected, `len=${len} ${from}->${to}`);
+  }
+});
+
+test('createSegmentConverter: 分块（非对齐边界）与一次性 concatSegments 一致', () => {
+  const rate = 48000;
+  const a = { sampleRate: rate, channels: [sine(rate, 440, 0.5, rate)] };                 // 1s 单声道
+  const b = { sampleRate: rate, channels: [sine(rate, 880, 0.3, rate / 2), sine(rate, 220, 0.2, rate / 2)] }; // 0.5s 立体声
+  const opts = { targetSampleRate: rate, targetChannels: 2, gapSec: 0.25, fadeMs: 8, normalize: true };
+  const segs = [{ name: 'a', pcm: a }, { name: 'b', pcm: b }];
+  const merged = Core.concatSegments(segs, opts);
+  const plan = Core.planMerge(segs, opts);
+  // 复算全局增益（与 concatSegments 同语义）
+  let peak = 0;
+  for (const p of plan.parts) {
+    peak = Math.max(peak, Core.segmentPeakAfterFade(segs[p.index].pcm, rate, 2, 8));
+  }
+  const gain = Math.min(0.89 / peak, 8);
+  let offset = 0;
+  for (const p of plan.parts) {
+    const conv = Core.createSegmentConverter(segs[p.index].pcm, {
+      targetRate: rate, targetChannels: 2, gain: gain, fadeMs: 8, int16: false
+    });
+    assert.strictEqual(conv.outFrames, p.outFrames);
+    const outChs = [new Float32Array(conv.outFrames), new Float32Array(conv.outFrames)];
+    let done = 0;
+    while (done < conv.outFrames) { // 997 帧非对齐块，验证块边界无接缝
+      const end = Math.min(done + 997, conv.outFrames);
+      conv.convert(done, end, [outChs[0].subarray(done, end), outChs[1].subarray(done, end)]);
+      done = end;
+    }
+    for (let c = 0; c < 2; c++) {
+      for (let i = 0; i < conv.outFrames; i++) {
+        assert.ok(Math.abs(outChs[c][i] - merged.channels[c][offset + i]) <= 1e-6,
+          `段${p.index} 声道${c} 帧${i}: ${outChs[c][i]} vs ${merged.channels[c][offset + i]}`);
+      }
+    }
+    offset += p.outFrames + plan.gapFrames;
+  }
+});
+
+test('createSegmentConverter: int16 模式与 floatToInt16 参考一致（±1 LSB）', () => {
+  const rate = 48000;
+  const pcm = { sampleRate: rate, channels: [sine(rate, 440, 0.6, rate)] };
+  // 参考路径：conformPcm → 手动淡变（同 applyFadeInOut 公式）→ ×gain → floatToInt16
+  const conf = Core.conformPcm(pcm, rate, 2);
+  const fadeLen = Math.min(Math.floor(8 / 1000 * rate), Math.floor(rate / 2));
+  for (const ch of conf.channels) {
+    for (let i = 0; i < fadeLen; i++) {
+      const g = i / fadeLen;
+      ch[i] *= g;
+      ch[ch.length - 1 - i] *= g;
+    }
+  }
+  const gain = 0.7;
+  const ref = conf.channels.map((ch) => {
+    const d = new Float32Array(ch.length);
+    for (let i = 0; i < ch.length; i++) d[i] = ch[i] * gain;
+    return Core.floatToInt16(d);
+  });
+  const conv = Core.createSegmentConverter(pcm, {
+    targetRate: rate, targetChannels: 2, gain: gain, fadeMs: 8, int16: true
+  });
+  const outChs = [new Int16Array(conv.outFrames), new Int16Array(conv.outFrames)];
+  let done = 0;
+  while (done < conv.outFrames) {
+    const end = Math.min(done + 4099, conv.outFrames);
+    conv.convert(done, end, [outChs[0].subarray(done, end), outChs[1].subarray(done, end)]);
+    done = end;
+  }
+  for (let c = 0; c < 2; c++) {
+    for (let i = 0; i < conv.outFrames; i++) {
+      assert.ok(Math.abs(outChs[c][i] - ref[c][i]) <= 1, `声道${c} 帧${i}: ${outChs[c][i]} vs ${ref[c][i]}`);
+    }
+  }
+});
+
+test('createSegmentConverter: 重采样 48k→44.1k 与 resampleChannel 一致', () => {
+  const pcm = { sampleRate: 48000, channels: [sine(48000, 440, 0.5, 48000)] };
+  const conv = Core.createSegmentConverter(pcm, { targetRate: 44100, targetChannels: 2, fadeMs: 0, int16: false });
+  assert.strictEqual(conv.outFrames, Math.round(48000 * 44100 / 48000));
+  const ref = Core.resampleChannel(pcm.channels[0], 48000, 44100);
+  const out = new Float32Array(conv.outFrames);
+  conv.convert(0, conv.outFrames, [out, new Float32Array(conv.outFrames)]);
+  for (let i = 0; i < conv.outFrames; i++) {
+    assert.ok(Math.abs(out[i] - ref[i]) <= 1e-6, `帧${i}: ${out[i]} vs ${ref[i]}`);
+  }
+});
+
+test('createSegmentConverter: 空片段 outFrames=0 且 convert 安全返回', () => {
+  const pcm = { sampleRate: 44100, channels: [new Float32Array(0)] };
+  const conv = Core.createSegmentConverter(pcm, { targetRate: 48000, targetChannels: 2, int16: false });
+  assert.strictEqual(conv.outFrames, 0);
+  assert.strictEqual(conv.convert(0, 0, [new Float32Array(0), new Float32Array(0)]), 0);
+});
+
+test('segmentPeakAfterFade: 等于转换器输出的峰值', () => {
+  const rate = 48000;
+  const pcm = { sampleRate: rate, channels: [sine(rate, 440, 0.6, rate)] };
+  const conv = Core.createSegmentConverter(pcm, { targetRate: rate, targetChannels: 2, fadeMs: 8, int16: false });
+  const out = new Float32Array(conv.outFrames);
+  conv.convert(0, conv.outFrames, [out, new Float32Array(conv.outFrames)]);
+  let peak = 0;
+  for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+  const scanPeak = Core.segmentPeakAfterFade(pcm, rate, 2, 8);
+  assert.ok(Math.abs(scanPeak - peak) <= 1e-6, `${scanPeak} vs ${peak}`);
+});
+
+test('segmentPeakAfterFade: 立体声→单声道目标取平均后的峰值', () => {
+  const rate = 48000;
+  const pcm = { sampleRate: rate, channels: [sine(rate, 440, 0.6, rate), sine(rate, 440, 0.2, rate)] };
+  const conv = Core.createSegmentConverter(pcm, { targetRate: rate, targetChannels: 1, fadeMs: 0, int16: false });
+  const out = new Float32Array(conv.outFrames);
+  conv.convert(0, conv.outFrames, [out]);
+  let peak = 0;
+  for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+  const scanPeak = Core.segmentPeakAfterFade(pcm, rate, 1, 0);
+  assert.ok(Math.abs(scanPeak - peak) <= 1e-6, `${scanPeak} vs ${peak}`);
+  assert.ok(Math.abs(peak - 0.4) <= 1e-5); // 同相同幅值正弦平均 = 幅值和的一半
+});
+
+test('planMerge: 总帧数与 concatSegments 输出一致（含间隔与空片段）', () => {
+  const rate = 48000;
+  const segs = [
+    { name: 'a', pcm: { sampleRate: rate, channels: [sine(rate, 440, 0.5, rate)] } },
+    { name: 'e', pcm: { sampleRate: rate, channels: [new Float32Array(0)] } },
+    { name: 'b', pcm: { sampleRate: rate, channels: [sine(rate, 880, 0.3, rate / 2)] } }
+  ];
+  const opts = { targetSampleRate: rate, targetChannels: 2, gapSec: 0.25, fadeMs: 8 };
+  const plan = Core.planMerge(segs, opts);
+  assert.strictEqual(plan.parts.length, 2); // 空片段被跳过
+  assert.strictEqual(plan.gapFrames, Math.round(0.25 * rate));
+  const merged = Core.concatSegments(segs, opts);
+  assert.strictEqual(merged.channels[0].length, plan.totalFrames);
+  // 间隔区绝对静音（零初始化）
+  const gapStart = plan.parts[0].outFrames;
+  for (let i = gapStart; i < gapStart + plan.gapFrames; i++) {
+    assert.strictEqual(merged.channels[0][i], 0);
+    assert.strictEqual(merged.channels[1][i], 0);
+  }
+});
+
+test('planMerge: 全空片段抛错', () => {
+  assert.throws(() => Core.planMerge(
+    [{ name: 'e', pcm: { sampleRate: 44100, channels: [new Float32Array(0)] } }],
+    {}
+  ));
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

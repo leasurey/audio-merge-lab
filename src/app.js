@@ -32,7 +32,8 @@
     mergeToken: 0,    // 取消令牌：每次合并自增，回调里比对
     mergedBlob: null,
     mergedUrl: null,
-    mergedExt: 'wav'
+    mergedExt: 'wav',
+    mergedOpfsName: null // 当前结果对应的 OPFS 文件名（清理时保留）
   };
 
   var decodeQueue = [];    // 待解码片段队列（顺序执行，控制内存峰值）
@@ -272,6 +273,8 @@
         decoding: true,
         failed: false,
         pcm: null,
+        audioBuffer: null, // 解码时的 AudioBuffer（M4A 调度零拷贝复用）
+        released: false,   // PCM 是否已在合并中被释放（重试时自动重新解码）
         duration: 0,
         sampleRate: 0,
         channels: 0
@@ -305,6 +308,7 @@
       // 解码期间该片段可能已被移除
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
       seg.pcm = audioBufferToPcm(audioBuf);
+      seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用，且与 pcm 视图共享同一块内存
       seg.duration = audioBuf.duration;
       seg.sampleRate = audioBuf.sampleRate;
       seg.channels = audioBuf.numberOfChannels;
@@ -667,6 +671,367 @@
     return e;
   }
 
+  /* ---------------- 流式合并（V0.3.0） ----------------
+   * 长音频合并的内存瓶颈是"整体物化"：旧流程先为每段建全量 conform 拷贝，
+   * 再建全量输出 PCM，最后整体编码——两个 40 分钟立体声文件峰值可超 4GB
+   * （用户实测），iOS 直接杀页面重载。新流程：
+   *   1. 分块转换（AudioCore.createSegmentConverter，块边界无接缝）；
+   *   2. 输出直接写文件——优先 OPFS（Origin Private File System）落盘，
+   *      不可用时回落内存块拼接；
+   *   3. 每段消费完立即释放其解码数据（保留 blob，重试时自动重新解码）；
+   *   4. M4A 改用 AudioBuffer 顺序调度进 MediaRecorder，不再整体拷贝。
+   * ----------------------------------------------------------- */
+
+  var OPFS_PREFIX = 'audio-merge-';
+  var MERGE_CHUNK_FRAMES = 32768; // 输出帧/块（48kHz 约 0.68s）
+
+  /**
+   * 打开 OPFS 写通道（流式输出的落盘位置）。
+   * 优先 createSyncAccessHandle（Chrome/Edge 108+），回落 createWritable；
+   * 均不可用（旧 Safari 等）返回 null，调用方回落内存拼接。
+   */
+  async function openMergeSink(ext) {
+    if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') return null;
+    var name = OPFS_PREFIX + nowStamp() + '.' + ext;
+    try {
+      var dir = await navigator.storage.getDirectory();
+      var handle = await dir.getFileHandle(name, { create: true });
+      if (typeof handle.createSyncAccessHandle === 'function') {
+        var access = await handle.createSyncAccessHandle();
+        access.truncate(0);
+        return {
+          opfs: true,
+          name: name,
+          write: function (bytes) { access.write(bytes); return Promise.resolve(); },
+          finish: async function () {
+            try { access.flush(); } catch (e) { /* 忽略 */ }
+            access.close();
+            return await handle.getFile(); // OPFS File：磁盘支撑的 Blob，不占内存
+          },
+          abort: function () { try { access.close(); } catch (e) { /* 忽略 */ } }
+        };
+      }
+      if (typeof handle.createWritable === 'function') {
+        var writable = await handle.createWritable();
+        return {
+          opfs: true,
+          name: name,
+          write: async function (bytes) { await writable.write(bytes); },
+          finish: async function () {
+            await writable.close();
+            return await handle.getFile();
+          },
+          abort: async function () { try { await writable.abort(); } catch (e) { /* 忽略 */ } }
+        };
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 清理历史合并留下的 OPFS 文件（保留当前结果文件，防止无限增长） */
+  async function cleanOldOpfsFiles(keepName) {
+    if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') return;
+    try {
+      var dir = await navigator.storage.getDirectory();
+      if (typeof dir.entries !== 'function') return;
+      var names = [];
+      for await (var entry of dir.entries()) {
+        if (String(entry[0]).indexOf(OPFS_PREFIX) === 0 && entry[0] !== keepName) names.push(entry[0]);
+      }
+      for (var i = 0; i < names.length; i++) {
+        try { await dir.removeEntry(names[i]); } catch (e) { /* 忽略 */ }
+      }
+    } catch (e) { /* 迭代不可用（旧浏览器）则跳过清理 */ }
+  }
+
+  /** 释放已消费片段的解码数据（保留 blob 与元数据；重试时自动重新解码） */
+  function releaseSegmentPcm(seg) {
+    seg.pcm = null;
+    seg.audioBuffer = null;
+    seg.released = true;
+  }
+
+  /** 合并前确保所有片段都有解码数据（被释放过的重新解码） */
+  async function ensureAllDecoded() {
+    var pending = state.segments.filter(function (s) { return s.released && !s.failed; });
+    for (var i = 0; i < pending.length; i++) {
+      var seg = pending[i];
+      seg.released = false;
+      seg.decoding = true;
+      renderList();
+      setStatus('重新解码「' + seg.name + '」…');
+      await decodeSegment(seg);
+    }
+    renderList();
+  }
+
+  /** 合并内存估算（字节）：输入解码数据 + 输出文件 */
+  function estimateMergeBytes() {
+    var inputs = 0, dur = 0;
+    state.segments.forEach(function (s) {
+      dur += s.duration || 0;
+      if (s.pcm) {
+        inputs += s.pcm.channels[0].length * s.pcm.channels.length * 4;
+      } else {
+        inputs += (s.duration || 0) * (s.sampleRate || 44100) * (s.channels || 1) * 4;
+      }
+    });
+    var out = 0;
+    if (state.format === 'wav') out = dur * estimateTargetRate() * 2 * 2;
+    else if (state.format === 'mp3') out = dur * state.bitrate * 1000 / 8;
+    else out = dur * 128000 / 8; // M4A 按 128kbps 估
+    return { inputs: inputs, out: out, total: inputs + out };
+  }
+
+  /**
+   * 流式合并（WAV/MP3）：逐段分块转换并写出。
+   * @param {number} token 取消令牌
+   * @param {Object|null} sink openMergeSink 的返回值（null = 内存拼接回落）
+   */
+  async function streamMerge(token, sink) {
+    var segs = state.segments;
+    var gapSec = parseFloat($('gapRange').value) || 0;
+    var targetRate = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
+    var plan = AudioCore.planMerge(
+      segs.map(function (s) { return { name: s.name, pcm: s.pcm }; }),
+      { targetSampleRate: targetRate, targetChannels: 2, gapSec: gapSec, fadeMs: 8 }
+    );
+
+    // 归一化全局增益（与"先拼接再归一化"等价：拼接后峰值 = 各段淡变后峰值的最大者）
+    var gain = 1;
+    if ($('normalizeChk').checked) {
+      var peak = 0;
+      plan.parts.forEach(function (p) {
+        peak = Math.max(peak, AudioCore.segmentPeakAfterFade(
+          segs[p.index].pcm, plan.targetSampleRate, plan.targetChannels, 8
+        ));
+      });
+      if (peak > 0 && isFinite(peak)) gain = Math.min(0.89 / peak, 8);
+    }
+
+    var parts = []; // 回落模式的内存块
+    function write(bytes) {
+      if (sink) return sink.write(bytes);
+      parts.push(bytes);
+      return Promise.resolve();
+    }
+
+    try {
+      // WAV：头部先行（总帧数已由 planMerge 算出，无需回头补写）
+      if (state.format === 'wav') {
+        await write(AudioCore.buildWavHeader(
+          plan.totalFrames, plan.targetSampleRate, plan.targetChannels, 16
+        ));
+      }
+      var enc = null;
+      if (state.format === 'mp3') {
+        enc = new window.lamejs.Mp3Encoder(plan.targetChannels, plan.targetSampleRate, state.bitrate);
+      }
+
+      // 复用缓冲：Int16 每声道一块；WAV 还需一块交织字节缓冲
+      var int16Chs = [];
+      for (var c = 0; c < plan.targetChannels; c++) int16Chs.push(new Int16Array(MERGE_CHUNK_FRAMES));
+      var wavBytes = null, wavView = null;
+      if (state.format === 'wav') {
+        wavBytes = new Uint8Array(MERGE_CHUNK_FRAMES * plan.targetChannels * 2);
+        wavView = new DataView(wavBytes.buffer);
+      }
+
+      function writeWindow(frames) {
+        if (state.format === 'wav') {
+          var off = 0;
+          for (var n = 0; n < frames; n++) {
+            for (var ch = 0; ch < plan.targetChannels; ch++) {
+              wavView.setInt16(off, int16Chs[ch][n], true);
+              off += 2;
+            }
+          }
+          return write(wavBytes.subarray(0, frames * plan.targetChannels * 2));
+        }
+        var left = int16Chs[0].subarray(0, frames);
+        var right = plan.targetChannels > 1 ? int16Chs[1].subarray(0, frames) : null;
+        var buf = right ? enc.encodeBuffer(left, right) : enc.encodeBuffer(left);
+        if (buf && buf.length > 0) {
+          return write(new Uint8Array(buf.buffer, buf.byteOffset, buf.length));
+        }
+        return Promise.resolve();
+      }
+
+      function writeSilence(frames) {
+        var done = 0;
+        function step() {
+          if (done >= frames) return Promise.resolve();
+          var n = Math.min(MERGE_CHUNK_FRAMES, frames - done);
+          if (state.format === 'wav') {
+            var p = write(new Uint8Array(n * plan.targetChannels * 2));
+            done += n;
+            return p.then(step);
+          }
+          for (var c = 0; c < plan.targetChannels; c++) int16Chs[c].fill(0, 0, n);
+          var q = writeWindow(n);
+          done += n;
+          return q.then(step);
+        }
+        return step();
+      }
+
+      var writtenFrames = 0;
+      var yieldCount = 0;
+      for (var pi = 0; pi < plan.parts.length; pi++) {
+        var part = plan.parts[pi];
+        var seg = segs[part.index];
+        var conv = AudioCore.createSegmentConverter(seg.pcm, {
+          targetRate: plan.targetSampleRate,
+          targetChannels: plan.targetChannels,
+          gain: gain,
+          fadeMs: 8,
+          int16: true
+        });
+        var done = 0;
+        while (done < part.outFrames) {
+          if (token !== state.mergeToken) throw canceledError();
+          var end = Math.min(done + MERGE_CHUNK_FRAMES, part.outFrames);
+          conv.convert(done, end, int16Chs);
+          await writeWindow(end - done);
+          writtenFrames += end - done;
+          done = end;
+          setProgress(writtenFrames / plan.totalFrames,
+            state.format === 'mp3' ? 'MP3 编码中' : '写出中');
+          // 每 8 块让出一次主线程（约 5 秒音频/次）：进度足够流畅，
+          // 又不会为长文件积累出几十秒的纯等待
+          if ((++yieldCount & 7) === 0) await nextFrame();
+        }
+        if (plan.gapFrames > 0 && pi < plan.parts.length - 1) {
+          await writeSilence(plan.gapFrames);
+          writtenFrames += plan.gapFrames;
+        }
+        // 该段已消费：释放解码数据（保留 blob；重试时 ensureAllDecoded 重建）
+        releaseSegmentPcm(seg);
+        setStatus('已处理 ' + (pi + 1) + '/' + plan.parts.length +
+          ' 段（' + seg.name + '），输入内存已释放');
+      }
+
+      if (state.format === 'mp3') {
+        var flushBuf = enc.flush();
+        if (flushBuf && flushBuf.length > 0) {
+          await write(new Uint8Array(flushBuf.buffer, flushBuf.byteOffset, flushBuf.length));
+        }
+      }
+      setProgress(1);
+
+      var blob;
+      if (sink) {
+        blob = await sink.finish();
+        state.mergedOpfsName = sink.name;
+      } else {
+        blob = new Blob(parts, { type: state.format === 'mp3' ? 'audio/mpeg' : 'audio/wav' });
+      }
+      return {
+        blob: blob,
+        sampleRate: plan.targetSampleRate,
+        durationSec: plan.totalFrames / plan.targetSampleRate
+      };
+    } catch (e) {
+      if (sink) sink.abort();
+      throw e;
+    }
+  }
+
+  /**
+   * M4A(AAC) 实时编码：把各段 AudioBuffer 顺序调度进 MediaRecorder，
+   * 不生成合并后的整体 PCM（旧实现整体拷贝一遍，长音频内存翻倍）。
+   * 归一化/淡变经 GainNode 自动化实现；采样率不一致时仅对该段做一次
+   * 瞬时重采样拷贝（声道交由 WebAudio 上混规则处理）。
+   */
+  function encodeM4AScheduled(segs, targetRate, gapSec, gain, fadeSec, token, onProgress) {
+    return new Promise(function (resolve, reject) {
+      var ctx = state.audioCtx;
+      var dest = ctx.createMediaStreamDestination();
+      var mime = pickMimeType() || '';
+      var rec;
+      try {
+        rec = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : undefined);
+      } catch (e) { reject(e); return; }
+      state.m4aRecorder = rec;
+      var chunks = [];
+      rec.ondataavailable = function (e) {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      var sources = [];
+      var t = ctx.currentTime + 0.2;
+      var t0 = t;
+
+      function segmentBuffer(seg) {
+        // 采样率一致：直接用解码缓冲（零拷贝）；否则仅对本段重采样
+        if (seg.audioBuffer && seg.audioBuffer.sampleRate === targetRate) return seg.audioBuffer;
+        var src = seg.pcm;
+        var conv = AudioCore.createSegmentConverter(src, {
+          targetRate: targetRate,
+          targetChannels: src.channels.length, // 声道不变，单声道由 WebAudio 上混
+          fadeMs: 0,
+          int16: false
+        });
+        var buf = ctx.createBuffer(src.channels.length, conv.outFrames, targetRate);
+        var views = [];
+        for (var c = 0; c < src.channels.length; c++) views.push(buf.getChannelData(c));
+        conv.convert(0, conv.outFrames, views);
+        return buf;
+      }
+
+      segs.forEach(function (seg) {
+        if (!seg.pcm) return;
+        var buf = segmentBuffer(seg);
+        var dur = buf.duration;
+        var src = ctx.createBufferSource();
+        src.buffer = buf;
+        var g = ctx.createGain();
+        if (dur > fadeSec * 2) {
+          g.gain.setValueAtTime(0, t);
+          g.gain.linearRampToValueAtTime(gain, t + fadeSec);
+          g.gain.setValueAtTime(gain, t + dur - fadeSec);
+          g.gain.linearRampToValueAtTime(0, t + dur);
+        } else {
+          g.gain.value = gain;
+        }
+        src.connect(g);
+        g.connect(dest);
+        src.start(t);
+        src.stop(t + dur);
+        sources.push(src);
+        t += dur + gapSec;
+      });
+      var endTime = t;
+
+      rec.start(1000);
+      var timer = setInterval(function () {
+        var p = Math.min(1, Math.max(0, (ctx.currentTime - t0) / Math.max(0.001, endTime - t0)));
+        onProgress(p);
+        if (p >= 1) {
+          clearInterval(timer);
+          if (rec.state !== 'inactive') rec.stop();
+        }
+      }, 250);
+
+      rec.onstop = function () {
+        clearInterval(timer);
+        state.m4aRecorder = null;
+        sources.forEach(function (s) { try { s.stop(); } catch (e) { /* 忽略 */ } });
+        if (token !== state.mergeToken) {
+          reject(canceledError());
+          return;
+        }
+        var type = (chunks[0] && chunks[0].type) || mime || 'audio/mp4';
+        resolve({
+          blob: new Blob(chunks, { type: type }),
+          ext: /webm|ogg/i.test(type) ? 'webm' : 'm4a',
+          mime: type
+        });
+      };
+    });
+  }
+
   async function doMerge() {
     var segs = state.segments;
     if (!segs.length) {
@@ -687,63 +1052,75 @@
     }
 
     var token = ++state.mergeToken;
+    hideResult(); // 旧结果与新合并无关，先清掉（同时释放其 blob URL）
     setBusy(true);
-    setStatus('正在合并 ' + segs.length + ' 段音频（解码已在导入时完成，此处执行拼接与编码）…');
+    setStatus('正在准备合并…');
     showProgress(0);
 
     try {
-      await getCtx();
-      await nextFrame();
-      // 自适应目标采样率：输入同为 48kHz 时沿用，免重采样
-      var targetRate = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
-      var pcm = AudioCore.concatSegments(
-        segs.map(function (s) { return { name: s.name, pcm: s.pcm }; }),
-        {
-          targetSampleRate: targetRate,
-          targetChannels: 2,
-          gapSec: parseFloat($('gapRange').value) || 0,
-          fadeMs: 8,
-          normalize: $('normalizeChk').checked,
-          normalizeTarget: 0.89
-        }
-      );
-      if (token !== state.mergeToken) throw canceledError();
-
-      var blob, ext, mime;
-      if (state.format === 'wav') {
-        setStatus('正在编码 WAV…');
-        showProgress(0.1);
-        await nextFrame();
-        var wav = AudioCore.encodeWav(pcm, 16);
-        blob = new Blob([wav], { type: 'audio/wav' });
-        ext = 'wav';
-        mime = 'audio/wav';
-        setProgress(1);
-      } else if (state.format === 'mp3') {
-        setStatus('正在编码 MP3（' + state.bitrate + ' kbps），可随时取消…');
-        var mp3 = await AudioCore.encodeMP3(pcm, {
-          lamejs: window.lamejs,
-          kbps: state.bitrate,
-          blockFrames: 1152 * 50,
-          yieldFn: nextFrame,
-          onProgress: function (p) { setProgress(p, 'MP3 编码中'); },
-          isCanceled: function () { return token !== state.mergeToken; }
-        });
+      // 被释放过的片段重新解码（流式合并会逐段释放输入控制内存峰值）
+      if (segs.some(function (s) { return s.released; })) {
+        await ensureAllDecoded();
         if (token !== state.mergeToken) throw canceledError();
-        blob = new Blob([mp3], { type: 'audio/mpeg' });
-        ext = 'mp3';
-        mime = 'audio/mpeg';
-      } else {
-        setStatus('M4A 实时编码中：耗时与音频等长，请保持页面在前台…');
-        var r = await encodeM4A(pcm, token, function (p) {
-          setProgress(p, 'M4A 实时编码中');
-        });
-        blob = r.blob;
-        ext = r.ext;
-        mime = r.mime;
+        if (decodingCount() > 0 || segs.some(function (s) { return s.failed; })) {
+          throw new Error('请先等待所有片段解码完成（或移除失败的片段）');
+        }
       }
 
-      finishResult(blob, ext, mime, pcm);
+      if (state.format === 'm4a') {
+        // M4A：AudioBuffer 顺序调度 + MediaRecorder 实时捕获
+        setStatus('M4A 实时编码中：耗时与音频等长，请保持页面在前台…');
+        await getCtx();
+        await nextFrame();
+        var mTarget = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
+        var mGap = parseFloat($('gapRange').value) || 0;
+        var mGain = 1;
+        if ($('normalizeChk').checked) {
+          var mPeak = 0;
+          segs.forEach(function (s) {
+            mPeak = Math.max(mPeak, AudioCore.segmentPeakAfterFade(s.pcm, mTarget, 2, 8));
+          });
+          if (mPeak > 0 && isFinite(mPeak)) mGain = Math.min(0.89 / mPeak, 8);
+        }
+        var r = await encodeM4AScheduled(segs, mTarget, mGap, mGain, 0.008, token, function (p) {
+          setProgress(p, 'M4A 实时编码中');
+        });
+        if (token !== state.mergeToken) throw canceledError();
+        var mDur = segs.reduce(function (a, s) { return a + (s.duration || 0); }, 0) +
+          mGap * (segs.length - 1);
+        finishResult(r.blob, r.ext, r.mime, {
+          sampleRate: mTarget, durationSec: mDur, bitrate: 0
+        });
+        return;
+      }
+
+      // WAV/MP3：流式合并（分块转换 + 落盘/内存回落 + 逐段释放输入）
+      var sink = await openMergeSink(state.format);
+      if (sink) await cleanOldOpfsFiles(sink.name);
+      var est = estimateMergeBytes();
+      if (!sink && est.total > 1200 * 1024 * 1024) {
+        // 无流式落盘且估算内存危险：明确警告，让用户选择，而不是 silent crash
+        var proceed = window.confirm(
+          '本次合并预计需要约 ' + fmtSize(est.total) + ' 内存，且当前浏览器不支持流式落盘（OPFS）。' +
+          '继续可能因内存不足导致页面重载。\n\n建议：分段合并、改用 MP3 输出，或换用支持 OPFS 的浏览器（Chrome/Edge）。\n\n仍要继续吗？'
+        );
+        if (!proceed) {
+          setStatus('已取消合并（内存估算超限）');
+          return;
+        }
+        if (token !== state.mergeToken) throw canceledError();
+      } else if (sink && est.inputs > 2000 * 1024 * 1024) {
+        setStatus('输入音频很大（约 ' + fmtSize(est.inputs) +
+          '），结果将直接写入本地存储，内存压力已尽量降低…');
+      }
+      var result = await streamMerge(token, sink);
+      if (token !== state.mergeToken) throw canceledError();
+      finishResult(result.blob, state.format,
+        state.format === 'mp3' ? 'audio/mpeg' : 'audio/wav', {
+          sampleRate: result.sampleRate,
+          durationSec: result.durationSec,
+          bitrate: state.format === 'mp3' ? state.bitrate : 0
+        });
     } catch (err) {
       if (err && err.code === 'CANCELED') {
         setStatus('已取消合并');
@@ -757,82 +1134,16 @@
     }
   }
 
-  /**
-   * M4A(AAC) 实时编码：把合并后的 PCM 实时播放进 MediaStreamDestination，
-   * 由 MediaRecorder 同步录制。耗时与音频时长相等（录制时长 = 播放时长）。
-   */
-  function encodeM4A(pcm, token, onProgress) {
-    return new Promise(function (resolve, reject) {
-      var ctx = state.audioCtx;
-      var numChannels = pcm.channels.length;
-      var len = pcm.channels[0].length;
-      var buf = ctx.createBuffer(numChannels, len, pcm.sampleRate);
-      for (var c = 0; c < numChannels; c++) buf.copyToChannel(pcm.channels[c], c);
-
-      var src = ctx.createBufferSource();
-      src.buffer = buf;
-      var dest = ctx.createMediaStreamDestination();
-      src.connect(dest); // 只连录制目标，不外放声音
-
-      var mime = pickMimeType() || '';
-      var rec;
-      try {
-        rec = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : undefined);
-      } catch (e) {
-        reject(e);
-        return;
-      }
-      state.m4aRecorder = rec;
-      var chunks = [];
-      var timer = null;
-
-      rec.ondataavailable = function (e) {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
-      };
-      rec.onstop = function () {
-        if (timer) clearInterval(timer);
-        state.m4aRecorder = null;
-        try { src.stop(); } catch (e) { /* 忽略 */ }
-        if (token !== state.mergeToken) {
-          reject(canceledError());
-          return;
-        }
-        var type = (chunks[0] && chunks[0].type) || mime || 'audio/mp4';
-        resolve({
-          blob: new Blob(chunks, { type: type }),
-          ext: /webm|ogg/i.test(type) ? 'webm' : 'm4a',
-          mime: type
-        });
-      };
-
-      rec.start(1000);
-      var startTime = ctx.currentTime;
-      var duration = buf.duration;
-      timer = setInterval(function () {
-        var p = Math.min(1, (ctx.currentTime - startTime) / duration);
-        onProgress(p);
-        if (p >= 1) clearInterval(timer);
-      }, 250);
-
-      src.onended = function () {
-        if (timer) clearInterval(timer);
-        onProgress(1);
-        if (rec.state !== 'inactive') rec.stop();
-      };
-      src.start();
-    });
-  }
-
-  function finishResult(blob, ext, mime, pcm) {
+  function finishResult(blob, ext, mime, meta) {
     if (state.mergedUrl) URL.revokeObjectURL(state.mergedUrl);
     state.mergedBlob = blob;
     state.mergedUrl = URL.createObjectURL(blob);
     state.mergedExt = ext;
     $('resultAudio').src = state.mergedUrl;
-    var extra = state.format === 'mp3' ? ' · ' + state.bitrate + ' kbps' : '';
-    $('resultMeta').textContent = ext.toUpperCase() + extra +
-      ' · ' + Math.round(pcm.sampleRate / 1000) + 'kHz' +
-      ' · 时长 ' + fmtTime(AudioCore.pcmDurationSec(pcm)) +
+    $('resultMeta').textContent = ext.toUpperCase() +
+      (meta.bitrate ? ' · ' + meta.bitrate + ' kbps' : '') +
+      ' · ' + Math.round(meta.sampleRate / 1000) + 'kHz' +
+      ' · 时长 ' + fmtTime(meta.durationSec) +
       ' · 大小 ' + fmtSize(blob.size);
     $('resultBox').hidden = false;
     setStatus('合并完成，可试听、分享或下载');
