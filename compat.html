@@ -75,6 +75,7 @@
   <p class="sub">本页用纯 ES5 编写，能被很旧的浏览器内核解析。它检测当前浏览器能否完整运行「录音合并器」，并把结果整理成可复制的报告。</p>
 
   <div class="verdict" id="verdict">检测中…</div>
+  <p class="hint" style="margin:-4px 0 12px"><a href="guide.html">使用指南</a> · <a href="convert.html">格式转换</a> · <a href="./">返回应用</a></p>
 
   <section class="card">
     <h2>浏览器信息</h2>
@@ -417,6 +418,14 @@
         }, function (err) {
           diagLine('平台解码', '失败：' + ((err && err.message) || 'EncodingError'), '#ff9d94');
           diagLine('结论', '本机解码器不支持该文件——应用会用内置解码器重试（WAV / MP3）；其他格式需先转换', '#f0d08a');
+          var more = document.createElement('div');
+          more.style.margin = '8px 0';
+          var link = document.createElement('a');
+          link.href = 'convert.html';
+          link.textContent = '→ 查看格式转换方法';
+          link.style.color = '#8ab4ff';
+          more.appendChild(link);
+          diagOut.appendChild(more);
         });
         if (ret && ret.then) {
           ret.catch(function (e) {

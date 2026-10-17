@@ -63,6 +63,13 @@ header.app-header p {
   color: var(--text-dim);
   font-size: 13px;
 }
+header.app-header .header-links { margin-top: 8px; }
+header.app-header .header-links a {
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
+}
+header.app-header .header-links a:hover { text-decoration: underline; }
 
 /* ---------- 卡片 ---------- */
 .card {

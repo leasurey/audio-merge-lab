@@ -12,6 +12,8 @@ var ASSETS = [
   './',
   './index.html',
   './compat.html',
+  './guide.html',
+  './convert.html',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

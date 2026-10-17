@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="description" content="录音合并器使用指南：三步完成音频合并，格式选择、长音频注意事项与常见问题。">
+<title>使用指南 · 录音合并器</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #0f1115; color: #e8ebf0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 15px; line-height: 1.65;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
+  h1 { font-size: 20px; margin: 6px 0 4px; }
+  h2 { font-size: 16px; margin: 22px 0 8px; }
+  .sub { color: #9aa4b2; font-size: 13px; margin: 0 0 6px; }
+  .nav { font-size: 13px; margin: 10px 0 4px; }
+  .nav a { color: #8ab4ff; margin-right: 14px; text-decoration: none; }
+  .card {
+    background: #171b22; border: 1px solid #2a313c; border-radius: 14px;
+    padding: 14px; margin: 12px 0;
+  }
+  .step { display: flex; gap: 10px; margin: 12px 0; }
+  .num {
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+    background: #1d222b; border: 1px solid #2a313c; color: #8ab4ff;
+    font-size: 12px; display: flex; align-items: center; justify-content: center;
+    margin-top: 3px;
+  }
+  .step b { color: #e8ebf0; }
+  .step p { margin: 2px 0 0; color: #b9c2ce; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #232932; vertical-align: top; }
+  th { color: #9aa4b2; font-weight: 600; }
+  td b { color: #e8ebf0; }
+  .hint { font-size: 12px; color: #9aa4b2; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 700; border-radius: 5px;
+    padding: 1px 6px; margin-right: 4px;
+  }
+  .tag.ok { background: #17372a; color: #6fd7a2; }
+  .tag.warn { background: #33290f; color: #f0d08a; }
+  .faq q { display: block; font-weight: 600; color: #e8ebf0; margin-top: 10px; quotes: none; }
+  .faq p { margin: 2px 0 0; color: #b9c2ce; font-size: 14px; }
+  .back { text-align: center; margin-top: 22px; font-size: 14px; }
+  .back a { color: #8ab4ff; }
+  a { color: #8ab4ff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>使用指南</h1>
+  <p class="sub">三步把多段录音合成一个文件。全部在本地完成，不上传任何数据。</p>
+  <div class="nav">
+    <a href="./">← 返回应用</a>
+    <a href="convert.html">格式转换</a>
+    <a href="compat.html">兼容性自检</a>
+  </div>
+
+  <section class="card">
+    <h2 style="margin-top:4px">三步上手</h2>
+    <div class="step">
+      <div class="num">1</div>
+      <div>
+        <b>添加片段</b>
+        <p>点「导入音频文件」可多选；或点「开始录音」现录一段。手机录音一般是 m4a（iPhone）或 m4a/3gp（安卓），与导入的文件混在一起合并没有问题。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="num">2</div>
+      <div>
+        <b>调整顺序</b>
+        <p>每条左侧 ▶ 试听，右侧 ↑ ↓ 调整先后，✕ 移除。底部会实时显示段数与合计时长。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="num">3</div>
+      <div>
+        <b>选格式并合并</b>
+        <p>点底部「合并为 XX」，等进度走完 → 试听 → 「分享 / 下载」。WAV 最快、MP3 体积最小、M4A 实时编码（耗时与音频等长）。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-top:4px">输出格式怎么选</h2>
+    <table>
+      <tr><th>格式</th><th>特点</th><th>适合</th></tr>
+      <tr>
+        <td><b>WAV</b> <span class="tag ok">推荐</span></td>
+        <td>无损，约 10 MB/分钟；合并几乎瞬间完成</td>
+        <td>存档、还要再剪辑、音质优先</td>
+      </tr>
+      <tr>
+        <td><b>MP3</b></td>
+        <td>体积约为 WAV 的 1/10；编码耗时（10 分钟音频约 1–2 分钟），可取消</td>
+        <td>发给别人、上传平台、省空间</td>
+      </tr>
+      <tr>
+        <td><b>M4A</b></td>
+        <td>体积小；实时编码，耗时与音频等长，需保持页面在前台</td>
+        <td>想边听边录、兼容苹果设备</td>
+      </tr>
+    </table>
+    <p class="hint">只看体积不看时间的话：急用选 WAV，发人/传网上选 MP3，要苹果生态兼容选 M4A。</p>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-top:4px">长音频与性能</h2>
+    <p style="color:#b9c2ce;font-size:14px;margin:6px 0">
+      V0.3.0 起合并改为流式处理：逐段分块转换、结果直接写入浏览器本地存储（支持 OPFS 时），
+      每段处理完立即释放——两个 40 分钟的录音合并，内存峰值从约 4 GB 降到 1 GB 以内。
+    </p>
+    <p class="hint">
+      仍需注意：① MP3 编码是 CPU 密集型，40 分钟音频可能要等几分钟（有进度条，可取消）；
+      ② 不支持 OPFS 的旧浏览器上，超长合并会先弹窗提示，建议分段或换 Chrome / Edge。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-top:4px">常见问题</h2>
+    <div class="faq">
+      <q>点「导入音频文件」没反应，或选择器里没有音频？</q>
+      <p>点按钮下方「选不到文件？用兼容模式选择（不过滤格式）」——该入口不做文件类型过滤，任何支持文件选择的浏览器都会弹出选择器。</p>
+
+      <q>提示「解码失败」怎么办？</q>
+      <p>应用会自动用内置解码器重试（支持 WAV / MP3），成功时列表标注「内置解码」。若仍失败，提示里会写明检测到的格式：AMR（通话录音）、SILK（微信语音）、WMA / APE 等浏览器都解不了，需要先转换——见<a href="convert.html">格式转换</a>。</p>
+
+      <q>页面打不开 / 白屏？</q>
+      <p>换网络或换浏览器（Chrome / Edge / 夸克新版）。白屏时页面顶部会给出提示，点「运行兼容性自检」可查看具体原因。</p>
+
+      <q>iPhone 上能录音吗？</q>
+      <p>可以，需 HTTPS（在线链接满足）；录出的是 m4a。iOS 上导出会走系统播放器分享，而不是直接下载——这是 Safari 的限制。</p>
+
+      <q>文件会上传吗？</q>
+      <p>不会。解码、合并、编码全部在设备本地完成，页面没有任何上传代码；断网也能用（添加到主屏后）。</p>
+    </div>
+  </section>
+
+  <p class="back"><a href="./">← 返回应用</a></p>
+  <p class="hint" style="text-align:center">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a></p>
+</div>
+</body>
+</html>

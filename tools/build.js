@@ -74,6 +74,8 @@ fs.writeFileSync(dist('index.html'), html);
 /* ---------------- 2. PWA 资源 ---------------- */
 fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webmanifest'));
 fs.copyFileSync(path.join(root, 'compat.html'), dist('compat.html'));
+fs.copyFileSync(path.join(root, 'guide.html'), dist('guide.html'));
+fs.copyFileSync(path.join(root, 'convert.html'), dist('convert.html'));
 
 // sw.js 缓存名注入 APP_VERSION：缓存名随版本变化，旧缓存自动清除
 const coreSrc = read('src/audio-core.js');

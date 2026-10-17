@@ -443,7 +443,7 @@
       '「' + seg.name + '」解码失败：' + reason,
       '（文件 ' + sizeTxt + ' · 检测为 ' + (info.label || '未知格式') + '）'
     ];
-    if (info.advice) parts.push('。建议：' + info.advice);
+    if (info.advice) parts.push('。建议：' + info.advice + '（转换方法见页脚「格式转换」）');
     else if (fbErr) parts.push('。内置解析器也失败：' + (fbErr.message || fbErr));
     else parts.push('。可能是文件损坏或不完整，可尝试重新导出该文件，或点下方「兼容模式」重新选择');
     return new Error(parts.join(''));
