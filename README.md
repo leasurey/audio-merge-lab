@@ -2,7 +2,8 @@
 
 纯本地、跨 iOS / Android / Web 的录音合并工具。一套前端代码，三端运行（浏览器 / PWA / Capacitor 原生壳）；所有音频处理都在设备本地完成，不上传任何数据。
 
-- 版本：**V0.2.3**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
+- 版本：**V0.2.4**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
+- 作者：**k** · [B 站主页](https://space.bilibili.com/527557440)
 - 目标平台：iOS Safari / Android Chrome / 桌面浏览器（PWA 可安装）
 - 界面语言：中文
 - 在线体验：https://audio-merge-lab.app.workbuddy.host/

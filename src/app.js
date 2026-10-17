@@ -959,9 +959,8 @@
     renderList();
     setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并」');
 
-    // 页脚版本号：取核心层的单一权威值
-    $('appFooter').textContent = 'Audio Merge Lab v' + AudioCore.APP_VERSION +
-      ' · 纯前端实现 · 数据不离开你的设备';
+    // 页脚版本号：取核心层的单一权威值（作者与链接在模板中静态声明）
+    $('appVersion').textContent = 'v' + AudioCore.APP_VERSION;
 
     // PWA 离线缓存：仅在真实 http(s) 部署时注册（跳过 localhost 与 Capacitor 壳，
     // 避免 Capacitor 本地资源服务器被缓存导致更新后拿到旧文件）
