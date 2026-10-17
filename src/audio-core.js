@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.2.0';
+  var APP_VERSION = '0.2.1';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -137,6 +137,20 @@
   function pcmDurationSec(pcm) {
     if (!pcm || !pcm.channels || pcm.channels.length === 0) return 0;
     return pcm.channels[0].length / pcm.sampleRate;
+  }
+
+  /**
+   * 选择合并目标采样率：
+   *   - 所有输入一致且为标准 MP3 采样率（32k/44.1k/48k）时直接沿用
+   *     ——免去重采样（更快），且避免线性插值带来的音质损失；
+   *   - 其余情况（混合采样率、非标准率）统一到 44100。
+   */
+  function pickTargetRate(sampleRates) {
+    if (!sampleRates || sampleRates.length === 0) return DEFAULTS.targetSampleRate;
+    var first = sampleRates[0];
+    var allSame = sampleRates.every(function (r) { return r === first; });
+    if (allSame && [32000, 44100, 48000].indexOf(first) !== -1) return first;
+    return DEFAULTS.targetSampleRate;
   }
 
   /**
@@ -417,6 +431,7 @@
     peakNormalize: peakNormalize,
     pcmPeak: pcmPeak,
     pcmDurationSec: pcmDurationSec,
+    pickTargetRate: pickTargetRate,
     encodeWav: encodeWav,
     floatToInt16: floatToInt16,
     pcmToInt16Channels: pcmToInt16Channels,

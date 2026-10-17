@@ -158,6 +158,29 @@ test('peakNormalize: 全静音不产生 NaN', () => {
   }
 });
 
+/* ---------- 目标采样率选择 ---------- */
+test('pickTargetRate: 空输入回落 44100', () => {
+  assert.strictEqual(Core.pickTargetRate([]), 44100);
+});
+
+test('pickTargetRate: 单一标准采样率直接沿用（免重采样）', () => {
+  assert.strictEqual(Core.pickTargetRate([48000]), 48000);
+  assert.strictEqual(Core.pickTargetRate([44100]), 44100);
+  assert.strictEqual(Core.pickTargetRate([32000]), 32000);
+  assert.strictEqual(Core.pickTargetRate([48000, 48000, 48000]), 48000);
+});
+
+test('pickTargetRate: 混合采样率回落 44100', () => {
+  assert.strictEqual(Core.pickTargetRate([48000, 44100]), 44100);
+  assert.strictEqual(Core.pickTargetRate([44100, 48000]), 44100);
+});
+
+test('pickTargetRate: 非标准采样率重采样到 44100', () => {
+  assert.strictEqual(Core.pickTargetRate([22050]), 44100);
+  assert.strictEqual(Core.pickTargetRate([8000, 8000]), 44100);
+  assert.strictEqual(Core.pickTargetRate([96000]), 44100);
+});
+
 /* ---------- WAV 编码 ---------- */
 test('encodeWav: RIFF/WAVE 头字段与采样值正确（16bit 立体声）', () => {
   const pcm = {

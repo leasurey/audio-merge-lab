@@ -351,6 +351,12 @@ select:hover { border-color: var(--accent); }
 li.seg.playing { background: var(--card-2); border-radius: 10px; }
 li.seg.playing .seg-name { color: var(--accent); }
 
+/* ---------- 片段状态（解码中 / 失败） ---------- */
+li.seg.decoding .seg-name { color: var(--text-dim); }
+li.seg.decoding .seg-meta { color: var(--accent); }
+li.seg.failed .seg-name { color: var(--danger); }
+li.seg.failed .seg-meta { color: var(--danger); }
+
 /* ---------- 底部操作栏 ---------- */
 .action-bar {
   position: fixed;

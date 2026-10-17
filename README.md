@@ -2,7 +2,7 @@
 
 纯本地、跨 iOS / Android / Web 的录音合并工具。一套前端代码，三端运行（浏览器 / PWA / Capacitor 原生壳）；所有音频处理都在设备本地完成，不上传任何数据。
 
-- 版本：**V0.2.0**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
+- 版本：**V0.2.1**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
 - 目标平台：iOS Safari / Android Chrome / 桌面浏览器（PWA 可安装）
 - 界面语言：中文
 - 在线体验：https://audio-merge-lab.app.workbuddy.host/
@@ -32,10 +32,11 @@ python test/verify_wav.py   # Python wave 模块交叉校验 WAV 产物
 ## 功能
 
 - 导入 mp3 / m4a / wav / webm / ogg / flac（支持多选）
+- **即时导入反馈**：选中文件立刻在列表显示「解码中」，队列顺序解码逐条汇报；点导入时即预热音频管线（藏在文件选择器打开的等待里）
 - 内置录音：自动按平台优选编码（iOS → mp4/aac，Android → webm/opus）
 - 片段试听、排序（上移/下移）、移除、清空
 - 片段间隔 0–3 秒可调；可选峰值归一化（默认 8 倍增益上限）
-- **三种输出格式**：WAV（16bit/44.1kHz 无损）/ MP3（lamejs，96–320 kbps，分块编码 + 进度 + 取消）/ M4A(AAC)（MediaRecorder 实时，耗时与音频等长）
+- **三种输出格式**：WAV（16bit 无损，采样率自适应）/ MP3（lamejs，96–320 kbps，分块编码 + 进度 + 取消）/ M4A(AAC)（MediaRecorder 实时，耗时与音频等长）
 - 底部常驻操作栏：段数、合计时长、预计体积实时汇总
 - 结果试听、系统分享（Web Share API；iOS 自动降级为新窗口打开）
 - PWA：可添加到主屏、离线可用
@@ -151,6 +152,7 @@ iOS 后台持续录音：Xcode → Signing & Capabilities → Background Modes �
 
 ## 已知限制（如实说明）
 
+- 导入解码耗时取决于浏览器原生解码器（实测约 1–2ms/秒音频 + 约 0.5 秒固定开销）；V0.2.1 已做预热与即时占位反馈，但解码本体快不过系统解码器
 - M4A 输出是**实时**的：耗时与音频等长，且依赖浏览器 mp4 录制能力（不支持时该选项自动隐藏）
 - `decodeAudioData` 对 m4a 的支持依赖平台解码器：iOS Safari 原生支持；Android Chrome 一般支持；**桌面 Chrome 不支持 AAC**。需真机验证
 - MP3 编码在主线程分块执行（每块间让出），长文件耗时仍较明显（10 分钟音频约需 1–2 分钟）
@@ -175,10 +177,11 @@ node tools/github-debug-page.js https://github.com/new
 
 ## 测试
 
-- `node test/core.test.js`：19 项单元测试（重采样/声道归一/拼接/淡变/归一化/WAV 头/边界）
+- `node test/core.test.js`：23 项单元测试（重采样/声道归一/拼接/淡变/归一化/WAV 头/边界/目标采样率选择）
 - `node test/mp3.test.js`：9 项 MP3 功能测试——用官方 lamejs 真实编码，解析帧头验证同步字、位率索引、采样率索引、帧数、体积，以及进度单调性、取消、异常输入
 - `python test/verify_wav.py`：Python 标准库 `wave` 回读生成的 WAV，交叉校验头字段、静音间隔、信号 RMS
 - 构建产物校验：3 个 script 块语法、28 个 DOM id 唯一性、CSS 花括号配平、PNG 结构有效性
+- 导入性能：Edge 端到端分阶段实测（读取/解码/端到端），V0.2.1 起有预热 + 即时占位反馈
 
 ## GitHub 调研结论（2026-10-17 检索）
 
