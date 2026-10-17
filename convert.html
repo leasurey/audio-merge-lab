@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="description" content="音频格式转换指引：AMR、SILK（微信语音）、WMA、APE 等浏览器无法解码的格式，如何转成 MP3 / WAV。">
+<title>格式转换 · 录音合并器</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #0f1115; color: #e8ebf0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 15px; line-height: 1.65;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
+  h1 { font-size: 20px; margin: 6px 0 4px; }
+  h2 { font-size: 16px; margin: 20px 0 8px; }
+  .sub { color: #9aa4b2; font-size: 13px; margin: 0 0 6px; }
+  .nav { font-size: 13px; margin: 10px 0 4px; }
+  .nav a { color: #8ab4ff; margin-right: 14px; text-decoration: none; }
+  .card {
+    background: #171b22; border: 1px solid #2a313c; border-radius: 14px;
+    padding: 14px; margin: 12px 0;
+  }
+  .card h3 { font-size: 15px; margin: 2px 0 8px; }
+  .card h3 .tag {
+    font-size: 11px; font-weight: 700; border-radius: 5px; padding: 1px 6px;
+    margin-left: 6px; vertical-align: 2px;
+  }
+  .tag.best { background: #17372a; color: #6fd7a2; }
+  .tag.mid { background: #33290f; color: #f0d08a; }
+  .tag.warn { background: #3a1f1e; color: #ff9d94; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #232932; vertical-align: top; }
+  th { color: #9aa4b2; font-weight: 600; }
+  td code { background: #0f1115; border: 1px solid #2a313c; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  pre {
+    background: #0f1115; border: 1px solid #2a313c; border-radius: 10px;
+    padding: 10px 12px; overflow-x: auto; font-size: 12.5px; line-height: 1.6;
+    color: #cfd5de; margin: 8px 0 0;
+    font-family: Menlo, Consolas, monospace;
+  }
+  button.copy {
+    -webkit-appearance: none; appearance: none; border: 1px solid #2a313c;
+    background: #1d222b; color: #8ab4ff; font-size: 12px; font-weight: 600;
+    border-radius: 8px; padding: 6px 10px; margin-top: 8px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button.copy:active { background: #232a35; }
+  a { color: #8ab4ff; }
+  .hint { font-size: 12px; color: #9aa4b2; margin: 6px 0 0; }
+  .warn-box {
+    border: 1px solid #7a5f22; background: #33290f; color: #f0d08a;
+    border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-top: 10px;
+  }
+  .back { text-align: center; margin-top: 22px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>格式转换</h1>
+  <p class="sub">浏览器解不了的音频格式（AMR、SILK、WMA、APE…），先转成 MP3 / WAV 再导入本应用。</p>
+  <div class="nav">
+    <a href="./">← 返回应用</a>
+    <a href="guide.html">使用指南</a>
+    <a href="compat.html">兼容性自检</a>
+  </div>
+
+  <section class="card">
+    <h2 style="margin-top:4px">先对照：你的是哪种文件？</h2>
+    <table>
+      <tr><th>症状 / 格式</th><th>说明</th><th>怎么办</th></tr>
+      <tr>
+        <td><b>AMR</b>（.amr / .3ga）</td>
+        <td>手机<b>通话录音</b>最常见格式，浏览器一律不支持</td>
+        <td>转 MP3（见下方任一方式）</td>
+      </tr>
+      <tr>
+        <td><b>SILK</b>（.silk / 微信语音）</td>
+        <td>微信语音的私有编码，需专用工具导出</td>
+        <td>用 silk-v3-decoder 转 MP3</td>
+      </tr>
+      <tr>
+        <td><b>WMA / APE / CAF</b></td>
+        <td>旧版 Windows / 无损 / 苹果容器，浏览器不支持</td>
+        <td>转 MP3 或 WAV</td>
+      </tr>
+      <tr>
+        <td><b>M4A / AAC</b>（提示解码失败）</td>
+        <td>桌面 Chrome/Edge 不解 AAC；手机一般可以</td>
+        <td>换手机浏览器，或转 MP3</td>
+      </tr>
+      <tr>
+        <td><b>MP3 / WAV</b>（仍提示失败）</td>
+        <td>本应用已内置兜底解码器，正常文件都能解</td>
+        <td>先确认不是 0 字节/云盘未下载；再考虑文件损坏</td>
+      </tr>
+    </table>
+    <p class="hint">不确定格式？打开「兼容性自检 → 文件诊断」，选一下文件就能看到真实格式（魔数嗅探）。</p>
+  </section>
+
+  <section class="card">
+    <h3>方式一：电脑本地软件<span class="tag best">推荐 · 不上传</span></h3>
+    <p style="font-size:14px;color:#b9c2ce;margin:4px 0">
+      <b>格式工厂</b>（国内老牌免费工具，Windows）：拖入文件 → 选「音频 → MP3」→ 开始。官网：
+      <a href="https://www.pcfreetime.com/" target="_blank" rel="noopener noreferrer">pcfreetime.com</a>
+    </p>
+    <p style="font-size:14px;color:#b9c2ce;margin:4px 0">
+      <b>Audacity</b>（免费开源，Windows / macOS / Linux）：打开文件 → 文件 → 导出 → MP3。
+      官网：<a href="https://www.audacityteam.org/" target="_blank" rel="noopener noreferrer">audacityteam.org</a>
+    </p>
+    <p class="hint">优点：文件不离开你的电脑，适合通话录音、会议记录等私密内容。</p>
+  </section>
+
+  <section class="card">
+    <h3>方式二：命令行 FFmpeg<span class="tag mid">技术向 · 批量</span></h3>
+    <p style="font-size:14px;color:#b9c2ce;margin:4px 0">
+      Windows 安装：PowerShell 执行 <code>winget install ffmpeg</code>；macOS：<code>brew install ffmpeg</code>。
+    </p>
+    <pre>ffmpeg -i "录音.amr" -b:a 128k "录音.mp3"</pre>
+    <button class="copy" type="button" data-copy='ffmpeg -i "录音.amr" -b:a 128k "录音.mp3"'>复制命令</button>
+    <pre>ffmpeg -i "音频.wma" -b:a 192k "音频.mp3"</pre>
+    <button class="copy" type="button" data-copy='ffmpeg -i "音频.wma" -b:a 192k "音频.mp3"'>复制命令</button>
+    <pre>ffmpeg -i "视频.mp4" -vn -b:a 192k "音频.mp3"</pre>
+    <button class="copy" type="button" data-copy='ffmpeg -i "视频.mp4" -vn -b:a 192k "音频.mp3"'>复制命令</button>
+    <p class="hint">第三条用于「从视频里提取音轨」。SILK（微信语音）FFmpeg 原生不支持，需专用工具，见下文。</p>
+  </section>
+
+  <section class="card">
+    <h3>方式三：在线转换<span class="tag warn">需上传 · 注意隐私</span></h3>
+    <p style="font-size:14px;color:#b9c2ce;margin:4px 0">
+      <b>AConvert 中文站</b>（支持 AMR / M4A / WMA 等）：
+      <a href="https://www.aconvert.com/cn/audio/" target="_blank" rel="noopener noreferrer">aconvert.com/cn/audio/</a>
+    </p>
+    <p style="font-size:14px;color:#b9c2ce;margin:4px 0">
+      <b>Convertio 中文版</b>：
+      <a href="https://convertio.co/zh/audio-converter/" target="_blank" rel="noopener noreferrer">convertio.co/zh/audio-converter/</a>
+    </p>
+    <div class="warn-box">
+      以上为第三方网站，仅为便利提供链接：<b>文件需要上传到对方服务器</b>，我们无法保证其可用性、安全性与隐私政策。
+      通话录音、会议记录等敏感内容，请优先使用「方式一」的本地软件。<br>
+      另外：这些站点在中国大陆的实际可达性未经我们验证，打不开属正常情况，请改用本地工具。
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>微信语音（SILK）专项</h3>
+    <p style="font-size:14px;color:#b9c2ce;margin:4px 0">
+      微信语音为 SILK 编码，需要专门工具转换。开源方案 <b>silk-v3-decoder</b>：
+      <a href="https://github.com/kn007/silk-v3-decoder" target="_blank" rel="noopener noreferrer">github.com/kn007/silk-v3-decoder</a>
+      （提供 Windows 可执行版本，把 .silk 拖到脚本上即可输出 MP3）。
+    </p>
+    <p class="hint">注意：微信语音文件本身在手机的私有目录里，需先用微信「收藏 / 转存」或文件管理器导出，才有可能转换。</p>
+  </section>
+
+  <p class="back"><a href="./">← 返回应用</a></p>
+  <p class="hint" style="text-align:center">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a></p>
+</div>
+<script>
+/* 复制命令按钮 —— ES5，兼容旧内核 */
+(function () {
+  'use strict';
+  var btns = document.querySelectorAll('button.copy');
+  function copyText(text, cb) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      cb(ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { cb(true); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+  for (var i = 0; i < btns.length; i++) {
+    (function (btn) {
+      btn.onclick = function () {
+        var text = btn.getAttribute('data-copy') || '';
+        var original = btn.textContent;
+        copyText(text, function (ok) {
+          btn.textContent = ok ? '已复制' : '复制失败，请手动选择';
+          setTimeout(function () { btn.textContent = original; }, 1600);
+        });
+      };
+    })(btns[i]);
+  }
+})();
+</script>
+</body>
+</html>
