@@ -1,0 +1,8 @@
+{
+  "appId": "audiomergelab.app",
+  "appName": "录音合并器",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

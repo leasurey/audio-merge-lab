@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="纯本地音频合并工具：导入或录音频，合并为 WAV / MP3 / M4A。iOS / Android / Web 通用。">
+<title>录音合并器 · Audio Merge Lab</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<style>
+/*STYLES*/
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="app-header">
+    <h1><span class="dot"></span>录音合并器</h1>
+    <p>导入 mp3 / m4a / wav / webm 等音频，或直接录音，按顺序合并为一个文件。全部在本地处理，不上传任何数据。</p>
+  </header>
+
+  <!-- 导入 / 录音 -->
+  <section class="card">
+    <h2>1. 添加片段</h2>
+    <div class="btn-row">
+      <button class="btn primary" id="btnImport" type="button">导入音频文件</button>
+      <button class="btn ghost" id="btnRecord" type="button">开始录音</button>
+    </div>
+    <input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple hidden>
+    <div class="rec-indicator">
+      <span class="rec-dot" id="recordDot" hidden></span>
+      <span id="recordTime"></span>
+    </div>
+    <p class="hint">支持多选。文件仅在浏览器内解码，不会发送到任何服务器。</p>
+  </section>
+
+  <!-- 片段列表 -->
+  <section class="card">
+    <h2>2. 调整顺序 <span class="count" id="listCount">0 段</span></h2>
+    <ul class="seg-list" id="segmentList"></ul>
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn ghost" id="btnClear" type="button">清空列表</button>
+    </div>
+  </section>
+
+  <!-- 输出与选项 -->
+  <section class="card">
+    <h2>3. 输出与选项</h2>
+    <div class="opt-row">
+      <label>输出格式</label>
+      <div class="seg-control" id="formatGroup">
+        <button type="button" class="seg-btn active" data-fmt="wav">WAV</button>
+        <button type="button" class="seg-btn" data-fmt="mp3">MP3</button>
+        <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
+      </div>
+    </div>
+    <div class="opt-row" id="bitrateRow" hidden>
+      <label for="bitrateSel">MP3 位率</label>
+      <select id="bitrateSel">
+        <option value="96">96 kbps</option>
+        <option value="128" selected>128 kbps</option>
+        <option value="192">192 kbps</option>
+        <option value="256">256 kbps</option>
+        <option value="320">320 kbps</option>
+      </select>
+    </div>
+    <div class="opt-row">
+      <label for="gapRange">片段间隔</label>
+      <input type="range" id="gapRange" min="0" max="3" step="0.1" value="0">
+      <output id="gapValue">0.0 秒</output>
+    </div>
+    <label class="checkbox-row" for="normalizeChk">
+      <input type="checkbox" id="normalizeChk">
+      <span>峰值归一化（统一各段音量，避免某段太轻）</span>
+    </label>
+    <p class="hint" id="formatHint"></p>
+    <p class="hint" id="sizeEst"></p>
+  </section>
+
+  <audio id="segPlayer" preload="none" hidden></audio>
+
+  <!-- 进度 -->
+  <div id="progressWrap" hidden>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-meta">
+      <span id="progressLabel">0%</span>
+      <button type="button" class="btn tiny ghost" id="btnCancel">取消</button>
+    </div>
+  </div>
+
+  <p id="status"></p>
+
+  <!-- 结果 -->
+  <section class="card" id="resultBox" hidden>
+    <h2>4. 完成</h2>
+    <audio id="resultAudio" controls preload="metadata"></audio>
+    <p id="resultMeta"></p>
+    <div class="btn-row">
+      <button class="btn primary" id="btnShare" type="button">分享 / 下载</button>
+    </div>
+  </section>
+
+  <div class="action-bar" id="actionBar" hidden>
+    <div class="action-inner">
+      <span class="action-summary" id="actionSummary"></span>
+      <button class="btn primary" id="btnMerge" type="button">合并</button>
+    </div>
+  </div>
+
+  <footer id="appFooter">Audio Merge Lab · 纯前端实现 · 数据不离开你的设备</footer>
+</div>
+
+<script>
+/*VENDOR*/
+</script>
+<script>
+/*CORE*/
+</script>
+<script>
+/*APP*/
+</script>
+</body>
+</html>
