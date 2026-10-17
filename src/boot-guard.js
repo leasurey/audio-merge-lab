@@ -86,6 +86,7 @@
 
   // 1) 运行时异常（含后续 script 块的解析错误）
   window.onerror = function (message) {
+    if (booted) return false; // 启动成功后不再弹此横幅，避免把偶发错误误报成"启动失败"
     show(String(message || '脚本执行出错').slice(0, 120));
     return false; // 不吞掉错误，控制台仍可见
   };
