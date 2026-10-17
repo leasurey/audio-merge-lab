@@ -151,6 +151,19 @@ header.app-header p {
   border: 0;
 }
 
+/* 兼容模式导入入口：部分国产内核的 accept 过滤有 bug，用不过滤的备用入口 */
+.alt-import {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.alt-import:active { color: var(--accent); }
+
 /* ---------- 录音指示 ---------- */
 .rec-indicator {
   display: flex;

@@ -23,6 +23,7 @@ const dist = (p) => path.join(root, 'dist', p);
 let html = read('index.template.html');
 
 const inject = [
+  ['/*GUARD*/', read('src/boot-guard.js')],
   ['/*VENDOR*/', read('src/vendor/lame.min.js')],
   ['/*STYLES*/', read('src/styles.css')],
   ['/*CORE*/', read('src/audio-core.js')],
@@ -44,12 +45,20 @@ if (leftover.length > 0) {
 if (/<script/i.test(read('src/vendor/lame.min.js'))) {
   throw new Error('vendor 文件含 <script，内联不安全');
 }
+// 启动守卫必须保持纯 ES5：它要在旧内核里执行（旧内核解析不了 app.js 的 ES2017 语法）
+const guardSrc = read('src/boot-guard.js');
+for (const bad of [/=>/, /\bconst\s/, /\blet\s/, /`/]) {
+  if (bad.test(guardSrc)) {
+    throw new Error('boot-guard.js 含 ES6+ 语法 ' + bad + '（必须保持 ES5）');
+  }
+}
 
 fs.mkdirSync(dist('.'), { recursive: true });
 fs.writeFileSync(dist('index.html'), html);
 
 /* ---------------- 2. PWA 资源 ---------------- */
 fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webmanifest'));
+fs.copyFileSync(path.join(root, 'compat.html'), dist('compat.html'));
 
 // sw.js 缓存名注入 APP_VERSION：缓存名随版本变化，旧缓存自动清除
 const coreSrc = read('src/audio-core.js');

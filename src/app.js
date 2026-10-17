@@ -736,9 +736,15 @@
     try {
       var dir = await navigator.storage.getDirectory();
       if (typeof dir.entries !== 'function') return;
+      // 手动迭代（不用 for-await）：把语法基线压在 ES2017，
+      // 兼容 Chromium 55–62 一类旧内核的厂商浏览器
       var names = [];
-      for await (var entry of dir.entries()) {
-        if (String(entry[0]).indexOf(OPFS_PREFIX) === 0 && entry[0] !== keepName) names.push(entry[0]);
+      var it = dir.entries();
+      var step = await it.next();
+      while (!step.done) {
+        var name = String(step.value[0]);
+        if (name.indexOf(OPFS_PREFIX) === 0 && name !== keepName) names.push(name);
+        step = await it.next();
       }
       for (var i = 0; i < names.length; i++) {
         try { await dir.removeEntry(names[i]); } catch (e) { /* 忽略 */ }
@@ -1189,6 +1195,13 @@
   }
 
   /* ---------------- 事件绑定 ---------------- */
+  /** 文件选择回调（主入口与兼容模式入口共用） */
+  function handleFilePick(e) {
+    var files = Array.prototype.slice.call(e.target.files || []);
+    e.target.value = ''; // 允许重复选择同一文件
+    enqueueFiles(files);
+  }
+
   function bind() {
     // 导入按钮是 <label for="fileInput">：点击由浏览器原生激活 file input，
     // 不需要（也不能）用 JS 调 fileInput.click()——iOS WKWebView 会静默忽略
@@ -1197,11 +1210,10 @@
       warmAudioPipeline(); // 文件选择器打开前预热（移动端选择器要数秒）
     });
 
-    $('fileInput').addEventListener('change', function (e) {
-      var files = Array.prototype.slice.call(e.target.files || []);
-      e.target.value = ''; // 允许重复选择同一文件
-      enqueueFiles(files);
-    });
+    $('fileInput').addEventListener('change', handleFilePick);
+    // 兼容模式入口：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有 bug，
+    // 无 accept 的 input 仍能正常弹选择器；选中后同样走解码与格式校验
+    $('fileInputAny').addEventListener('change', handleFilePick);
 
     $('btnRecord').addEventListener('click', toggleRecord);
     $('btnShare').addEventListener('click', shareOrDownload);
@@ -1264,22 +1276,33 @@
 
   /* ---------------- 启动 ---------------- */
   document.addEventListener('DOMContentLoaded', function () {
-    bind();
-    detectFormats();
-    setFormat('wav');
-    renderList();
-    setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并」');
+    try {
+      bind();
+      detectFormats();
+      setFormat('wav');
+      renderList();
+      setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并」');
 
-    // 页脚版本号：取核心层的单一权威值（作者与链接在模板中静态声明）
-    $('appVersion').textContent = 'v' + AudioCore.APP_VERSION;
+      // 页脚版本号：取核心层的单一权威值（作者与链接在模板中静态声明）
+      $('appVersion').textContent = 'v' + AudioCore.APP_VERSION;
 
-    // PWA 离线缓存：仅在真实 http(s) 部署时注册（跳过 localhost 与 Capacitor 壳，
-    // 避免 Capacitor 本地资源服务器被缓存导致更新后拿到旧文件）
-    var isLocal = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
-    if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0 && !isLocal) {
-      navigator.serviceWorker.register('sw.js').catch(function () {
-        /* 注册失败不影响使用 */
-      });
+      // 通知启动守卫：应用已就绪（守卫会撤掉可能已显示的失败提示）
+      if (typeof window.__AML_BOOTED === 'function') window.__AML_BOOTED();
+
+      // PWA 离线缓存：仅在真实 http(s) 部署时注册（跳过 localhost 与 Capacitor 壳，
+      // 避免 Capacitor 本地资源服务器被缓存导致更新后拿到旧文件）
+      var isLocal = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+      if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0 && !isLocal) {
+        navigator.serviceWorker.register('sw.js').catch(function () {
+          /* 注册失败不影响使用 */
+        });
+      }
+    } catch (err) {
+      // 初始化异常：交给启动守卫显示可读提示（否则用户只看到白屏）
+      if (typeof window.__AML_FAIL === 'function') {
+        window.__AML_FAIL('初始化异常：' + (err && err.message ? err.message : err));
+      }
+      throw err;
     }
   });
 })();

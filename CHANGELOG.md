@@ -4,6 +4,29 @@
 
 ---
 
+## V0.3.1 — 2026-10-17
+
+Android 生态兼容性工程（用户反馈：他人用夸克浏览器打开显示「网页打不开」；部分浏览器导入失效）。
+
+### ✨ 新增
+
+- **兼容性自检页 `compat.html`**：纯 ES5 编写（旧内核也能执行），自动识别夸克 / UC / QQ(X5) / 百度 / 360 / 华为 / 荣耀 / vivo / 小米 / OPPO / 三星 / Edge / Firefox / 微信内置等，逐项检测 Promise、async/await、for-await、Web Audio、decodeAudioData、MediaRecorder、M4A 录制、getUserMedia、Blob、FileReader、文件选择器、OPFS、Service Worker，给出「完整支持 / 部分受限 / 不兼容」判定，并可一键复制诊断报告（含 UA）回传
+- **启动守卫（ES5）**：新增 `src/boot-guard.js`，在旧内核解析 app.js 失败、运行时异常、初始化超时三种情况下显示可读提示（含自检入口与重试），不再白屏
+- **导入兼容模式**：新增无 `accept` 过滤的备用文件入口（X5 / 夸克 / UC 等对 accept 过滤有已知 bug，会出现"没有音频文件"或不弹窗）
+- 页脚新增「兼容性自检」入口；SW 缓存清单加入 compat.html
+
+### 🔧 变更
+
+- 语法基线从 ES2018 降到 **ES2017**：`cleanOldOpfsFiles` 移除 `for await`（改手动迭代）
+- 应用初始化包 try/catch，异常时通过启动守卫显示原因
+
+### 🧪 验证
+
+- 构建期强校验：boot-guard.js 出现箭头函数/let/const/模板字符串即构建失败
+- acorn 以 ecmaVersion 2017 解析产物、以 5 解析守卫与自检页（见 README「兼容性」一节）
+
+---
+
 ## V0.3.0 — 2026-10-17
 
 修复长音频合并的内存爆炸与 iOS 页面重载（用户实测：两个 40 分钟 MP3 合并吃掉 4GB 内存；超过 50 分钟 iOS Chrome/Safari 直接强制重载页面）。

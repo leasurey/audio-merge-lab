@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="description" content="检测当前浏览器是否能完整运行录音合并器。纯 ES5 编写，兼容极旧内核。">
+<title>兼容性自检 · 录音合并器</title>
+<style>
+  /* 纯 CSS，不用 CSS 变量：旧内核（Chrome 49 之前）不支持 var() */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #0f1115; color: #e8ebf0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 15px; line-height: 1.55;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
+  h1 { font-size: 20px; margin: 6px 0 6px; }
+  .sub { color: #9aa4b2; font-size: 13px; margin: 0 0 14px; }
+  .card {
+    background: #171b22; border: 1px solid #2a313c; border-radius: 14px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .verdict {
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px;
+    font-weight: 600; border: 1px solid #2a313c; background: #1d222b;
+  }
+  .verdict.ok { background: #14301f; border-color: #2f6b4a; color: #86e0b0; }
+  .verdict.warn { background: #33290f; border-color: #7a5f22; color: #f0d08a; }
+  .verdict.bad { background: #33181a; border-color: #7a3a35; color: #ffb3ab; }
+  .verdict .detail { display: block; font-weight: normal; font-size: 13px; margin-top: 4px; color: inherit; opacity: .85; }
+  .kv { font-size: 13px; color: #9aa4b2; word-break: break-all; }
+  .kv b { color: #e8ebf0; font-weight: 600; }
+  ul.probes { list-style: none; margin: 0; padding: 0; }
+  ul.probes li {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 7px 0; border-bottom: 1px solid #232932; font-size: 14px;
+  }
+  ul.probes li:last-child { border-bottom: none; }
+  .tag {
+    flex: 0 0 auto; font-size: 11px; font-weight: 700; border-radius: 5px;
+    padding: 2px 6px; margin-top: 2px;
+  }
+  .tag.pass { background: #17372a; color: #6fd7a2; }
+  .tag.fail { background: #3a1f1e; color: #ff9d94; }
+  .tag.na { background: #2a2f38; color: #9aa4b2; }
+  .p-label { flex: 1; min-width: 0; }
+  .p-note { display: block; font-size: 12px; color: #9aa4b2; margin-top: 1px; }
+  textarea {
+    width: 100%; border-radius: 10px; border: 1px solid #2a313c;
+    background: #0f1115; color: #cfd5de; font-size: 12px; line-height: 1.5;
+    padding: 10px; resize: vertical;
+    font-family: Menlo, Consolas, monospace;
+    -webkit-appearance: none; appearance: none;
+  }
+  button {
+    -webkit-appearance: none; appearance: none; border: none; cursor: pointer;
+    background: #4f8cff; color: #fff; font-size: 15px; font-weight: 600;
+    border-radius: 10px; padding: 11px 16px; margin-top: 10px; width: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:active { background: #3a6fd8; }
+  .hint { font-size: 12px; color: #9aa4b2; margin: 8px 0 0; }
+  .back { text-align: center; margin-top: 6px; }
+  .back a { color: #8ab4ff; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>兼容性自检</h1>
+  <p class="sub">本页用纯 ES5 编写，能被很旧的浏览器内核解析。它检测当前浏览器能否完整运行「录音合并器」，并把结果整理成可复制的报告。</p>
+
+  <div class="verdict" id="verdict">检测中…</div>
+
+  <section class="card">
+    <h2>浏览器信息</h2>
+    <div class="kv" id="env">读取中…</div>
+  </section>
+
+  <section class="card">
+    <h2>能力检测</h2>
+    <ul class="probes" id="probes"></ul>
+  </section>
+
+  <section class="card">
+    <h2>复制诊断信息</h2>
+    <p class="hint">遇到问题时把下面内容复制回传即可（不含任何个人数据）。</p>
+    <textarea id="report" readonly rows="9"></textarea>
+    <button id="btnCopy" type="button">复制诊断信息</button>
+    <p class="hint" id="copyMsg"></p>
+  </section>
+
+  <p class="back"><a href="./">← 返回应用</a></p>
+</div>
+
+<script>
+/* 兼容性自检 — ES5 专用：不使用箭头函数 / let / const / 模板字符串 / class，
+   确保旧内核（X5 Chromium 53、老 WebView）也能执行到这里。 */
+(function () {
+  'use strict';
+
+  /* ---------------- 环境识别 ---------------- */
+  var ua = navigator.userAgent;
+
+  function pick(re) {
+    var m = ua.match(re);
+    return m ? m[1] : '';
+  }
+
+  var browser = { name: '未知', version: '' };
+  var rules = [
+    [/MicroMessenger\/([\d.]+)/i, '微信内置浏览器'],
+    [/AlipayClient\/([\d.]+)/i, '支付宝内置浏览器'],
+    [/Quark\/([\d.]+)/i, '夸克浏览器'],
+    [/UCBrowser\/([\d.]+)/i, 'UC 浏览器'],
+    [/MQQBrowser\/([\d.]+)/i, 'QQ 浏览器'],
+    [/baiduboxapp\/?([\d.]*)/i, '百度 App'],
+    [/BIDUBrowser\/([\d.]+)/i, '百度浏览器'],
+    [/HuaweiBrowser\/([\d.]+)/i, '华为浏览器'],
+    [/HonorBrowser\/([\d.]+)/i, '荣耀浏览器'],
+    [/vivoBrowser\/([\d.]+)/i, 'vivo 浏览器'],
+    [/MiuiBrowser\/([\d.]+)/i, '小米浏览器'],
+    [/HeyTapBrowser\/([\d.]+)/i, 'OPPO 浏览器'],
+    [/QihooBrowser|360SE|360EE/i, '360 浏览器'],
+    [/SamsungBrowser\/([\d.]+)/i, '三星浏览器'],
+    [/EdgA?\/([\d.]+)/i, 'Edge'],
+    [/Firefox\/([\d.]+)/i, 'Firefox'],
+    [/CriOS\/([\d.]+)/i, 'Chrome（iOS）'],
+    [/Chrome\/([\d.]+)/i, 'Chrome'],
+    [/Version\/([\d.]+).*Safari/i, 'Safari'],
+    [/AppleWebKit/i, 'WebKit 内核']
+  ];
+  for (var i = 0; i < rules.length; i++) {
+    var m = ua.match(rules[i][0]);
+    if (m) { browser.name = rules[i][1]; browser.version = m[1] || ''; break; }
+  }
+
+  var chromium = pick(/Chrome\/([\d.]+)/i) || pick(/CriOS\/([\d.]+)/i);
+  var androidVer = pick(/Android\s([\d.]+)/i);
+  var iosVer = (ua.match(/OS (\d+)[._](\d+)/) || []).slice(1).join('.');
+  var osName = /Android/i.test(ua) ? ('Android ' + androidVer) :
+    (/iPhone|iPad|iPod/i.test(ua) ? ('iOS ' + iosVer) :
+      (/Windows/i.test(ua) ? 'Windows' : (/Mac OS X/i.test(ua) ? 'macOS' : '其他')));
+
+  /* ---------------- 能力探测 ---------------- */
+  function hasAudioContext() {
+    return typeof (window.AudioContext || window.webkitAudioContext) === 'function';
+  }
+  function hasDecode() {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      return typeof AC.prototype.decodeAudioData === 'function';
+    } catch (e) { return false; }
+  }
+
+  var probes = [
+    { label: 'ES5 基础（本页能显示即为通过）', fn: function () { return true; } },
+    { label: 'Promise', fn: function () { return typeof Promise === 'function'; } },
+    { label: 'async / await 语法（ES2017）',
+      note: '低于此线：应用无法解析，会显示启动失败提示',
+      fn: function () { return !!new Function('return (async function(){})'); } },
+    { label: 'for await 语法（ES2018）',
+      note: '应用已不使用该语法，仅作参考',
+      fn: function () { return !!new Function('return (async function(){ for await (var x of []) {} })'); } },
+    { label: 'Web Audio（AudioContext）',
+      note: '解码与合并的基础，缺失则完全不可用',
+      fn: hasAudioContext },
+    { label: '音频解码（decodeAudioData）',
+      note: '导入 mp3 / m4a / wav 必需',
+      fn: hasDecode },
+    { label: '录音（MediaRecorder）', note: '缺失则「开始录音」不可用', fn: function () {
+      return typeof window.MediaRecorder === 'function';
+    } },
+    { label: 'M4A 录制（audio/mp4）', note: 'M4A 输出选项依赖此能力', fn: function () {
+      try { return typeof window.MediaRecorder === 'function' && MediaRecorder.isTypeSupported('audio/mp4'); }
+      catch (e) { return false; }
+    } },
+    { label: '麦克风接口（getUserMedia）', fn: function () {
+      return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    } },
+    { label: 'Blob / ObjectURL（导出用）', fn: function () {
+      return typeof window.Blob === 'function' && typeof URL !== 'undefined' &&
+        typeof URL.createObjectURL === 'function';
+    } },
+    { label: 'FileReader（兜底读文件）', fn: function () { return typeof FileReader === 'function'; } },
+    { label: '多文件选择（multiple）', fn: function () {
+      try { return 'multiple' in document.createElement('input'); } catch (e) { return false; }
+    } },
+    { label: '文件选择器（input type=file）', fn: function () {
+      try { var el = document.createElement('input'); el.type = 'file'; return el.type === 'file'; }
+      catch (e) { return false; }
+    } },
+    { label: 'OPFS 流式落盘（长音频优化）',
+      note: '缺失时合并走内存拼接，超长音频会有提示',
+      fn: function () { return typeof navigator.storage !== 'undefined' && typeof navigator.storage.getDirectory === 'function'; } },
+    { label: 'Service Worker（PWA 离线）', fn: function () { return 'serviceWorker' in navigator; } }
+  ];
+
+  var results = [];
+  var passCount = 0;
+  var failCount = 0;
+  var ul = document.getElementById('probes');
+
+  function runProbe(p) {
+    var ok = false;
+    try { ok = !!p.fn(); } catch (e) { ok = false; }
+    results.push({ label: p.label, ok: ok, note: p.note || '' });
+    if (ok) passCount++; else failCount++;
+
+    var li = document.createElement('li');
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + (ok ? 'pass' : 'fail');
+    tag.textContent = ok ? '支持' : '缺失';
+    li.appendChild(tag);
+    var body = document.createElement('div');
+    body.className = 'p-label';
+    body.appendChild(document.createTextNode(p.label));
+    if (p.note) {
+      var n = document.createElement('span');
+      n.className = 'p-note';
+      n.textContent = p.note;
+      body.appendChild(n);
+    }
+    li.appendChild(body);
+    ul.appendChild(li);
+  }
+  for (var k = 0; k < probes.length; k++) runProbe(probes[k]);
+
+  function resultOf(prefix) {
+    for (var j = 0; j < results.length; j++) {
+      if (results[j].label.indexOf(prefix) === 0) return results[j].ok;
+    }
+    return false;
+  }
+
+  /* ---------------- 判定 ---------------- */
+  var verdict = document.getElementById('verdict');
+  var level, text, detail;
+  if (!resultOf('async')) {
+    level = 'bad';
+    text = '不兼容：浏览器内核过旧';
+    detail = '当前内核不支持 async/await 语法（需 Chromium 55+ / iOS 11+ 或同等内核）。应用脚本无法解析，表现为白屏或"应用没能正常启动"。请升级浏览器（Chrome / Edge / 夸克 / 华为 / vivo 最新版），或在系统设置里更新 Android System WebView。';
+  } else if (!resultOf('Web Audio') || !resultOf('音频解码')) {
+    level = 'bad';
+    text = '不可用：缺少 Web Audio 音频能力';
+    detail = '当前浏览器没有 AudioContext 或 decodeAudioData，无法解码与合并音频。请更换为 Chrome / Edge / 系统 WebView 较新的浏览器。';
+  } else if (!resultOf('Blob')) {
+    level = 'bad';
+    text = '不可用：缺少 Blob / ObjectURL';
+    detail = '导出结果依赖 Blob 与 ObjectURL，请更换较新的浏览器。';
+  } else {
+    var missing = [];
+    if (!resultOf('OPFS')) missing.push('OPFS 落盘');
+    if (!resultOf('录音')) missing.push('录音');
+    if (!resultOf('M4A')) missing.push('M4A 输出');
+    if (missing.length === 0) {
+      level = 'ok';
+      text = '完整支持';
+      detail = '导入、录音、WAV / MP3 / M4A 三种输出、长音频流式合并（OPFS 落盘）均可用。';
+    } else {
+      level = 'warn';
+      text = '可用，但部分功能受限';
+      detail = '缺失：' + missing.join('、') + '。合并不受影响；长音频（40 分钟以上）在无 OPFS 时会走内存拼接，应用会先弹窗提示。';
+    }
+  }
+  verdict.className = 'verdict ' + level;
+  verdict.innerHTML = '';
+  verdict.appendChild(document.createTextNode(text));
+  var d = document.createElement('span');
+  d.className = 'detail';
+  d.textContent = detail;
+  verdict.appendChild(d);
+
+  /* ---------------- 环境信息与报告 ---------------- */
+  var env = document.getElementById('env');
+  var envLines = [
+    '识别结果：' + browser.name + (browser.version ? ' ' + browser.version : ''),
+    '系统：' + osName + (/HarmonyOS/i.test(ua) ? '（HarmonyOS）' : ''),
+    'Chromium 内核版本：' + (chromium || '无法识别'),
+    'UA：' + ua
+  ];
+  env.innerHTML = '';
+  for (var e = 0; e < envLines.length; e++) {
+    var line = document.createElement('div');
+    line.textContent = envLines[e];
+    env.appendChild(line);
+  }
+
+  function buildReport() {
+    var lines = [];
+    lines.push('录音合并器 · 兼容性自检报告');
+    lines.push('时间：' + new Date().toString());
+    lines.push('判定：' + text);
+    lines.push('识别：' + browser.name + (browser.version ? ' ' + browser.version : ''));
+    lines.push('系统：' + osName + (chromium ? ' / Chromium ' + chromium : ''));
+    lines.push('UA：' + ua);
+    lines.push('---- 能力明细 ----');
+    for (var j = 0; j < results.length; j++) {
+      lines.push((results[j].ok ? '[支持] ' : '[缺失] ') + results[j].label);
+    }
+    return lines.join('\n');
+  }
+
+  var report = document.getElementById('report');
+  report.value = buildReport();
+
+  var copyMsg = document.getElementById('copyMsg');
+  document.getElementById('btnCopy').onclick = function () {
+    function fallback() {
+      try {
+        report.focus();
+        report.select();
+        var ok = document.execCommand && document.execCommand('copy');
+        copyMsg.textContent = ok ? '已复制，可直接粘贴回传。' : '已选中文本，请长按/手动复制。';
+      } catch (err) {
+        copyMsg.textContent = '复制失败：请手动长按选择上方文本复制。';
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(report.value).then(function () {
+        copyMsg.textContent = '已复制，可直接粘贴回传。';
+      }, fallback);
+    } else {
+      fallback();
+    }
+  };
+})();
+</script>
+</body>
+</html>

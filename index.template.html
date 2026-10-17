@@ -12,6 +12,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<script>
+/*GUARD*/
+</script>
 <style>
 /*STYLES*/
 </style>
@@ -34,6 +37,10 @@
       <button class="btn ghost" id="btnRecord" type="button">开始录音</button>
     </div>
     <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
+    <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
+         会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
+    <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
+    <label class="alt-import" for="fileInputAny" id="btnImportAny">选不到文件？用兼容模式选择（不过滤格式）</label>
     <div class="rec-indicator">
       <span class="rec-dot" id="recordDot" hidden></span>
       <span id="recordTime"></span>
@@ -116,7 +123,7 @@
 
   <footer id="appFooter">
     <span class="footer-line">Audio Merge Lab <span id="appVersion"></span> · 纯前端实现 · 数据不离开你的设备</span>
-    <span class="footer-line footer-author">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a></span>
+    <span class="footer-line footer-author">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a> · <a href="compat.html">兼容性自检</a></span>
   </footer>
 </div>
 

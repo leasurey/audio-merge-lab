@@ -2,7 +2,7 @@
 
 纯本地、跨 iOS / Android / Web 的录音合并工具。一套前端代码，三端运行（浏览器 / PWA / Capacitor 原生壳）；所有音频处理都在设备本地完成，不上传任何数据。
 
-- 版本：**V0.3.0**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
+- 版本：**V0.3.1**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
 - 作者：**k** · [B 站主页](https://space.bilibili.com/527557440)
 - 目标平台：iOS Safari / Android Chrome / 桌面浏览器（PWA 可安装）
 - 界面语言：中文
@@ -161,6 +161,35 @@ iOS 后台持续录音：Xcode → Signing & Capabilities → Background Modes �
 - MP3 编码在主线程分块执行（每块间让出），长文件耗时仍较明显（10 分钟音频约需 1–2 分钟）
 - 未做裁剪、变速、交叉淡入淡出；只做顺序拼接 + 间隔 + 淡变 + 归一化
 - `dist/` 不随仓库分发，克隆后需自行 `node tools/build.js` 生成
+
+## 兼容性（Android 生态）
+
+### 语法基线
+
+产物脚本使用 **ES2017**（async/await），对应最低内核：Chromium 55+ / iOS 11+。启动守卫 `src/boot-guard.js` 与自检页 `compat.html` 是纯 **ES5**，保证旧内核也能显示可读提示而不是白屏。
+
+验证方式（构建后执行，见下节命令）：用 acorn 以 `ecmaVersion: 2017` 解析产物脚本、以 `ecmaVersion: 5` 解析守卫与自检页——任何超线语法直接报错。
+
+### 主流 Android 浏览器矩阵
+
+| 浏览器 | 内核基础 | 已知问题 | 本项目应对 |
+|---|---|---|---|
+| Chrome / Edge / Firefox | Chromium / Gecko，持续更新 | 无 | 基准平台 |
+| 三星浏览器 | Chromium | 无 | 基准平台 |
+| 夸克 | UC U4（Chromium 内核） | 自有网络栈（HTTPDNS/云加速）对陌生域名偶发「网页打不开」 | 提供第二入口 + `compat.html` 自检 |
+| UC 浏览器 | UC U4 / U3 | accept 过滤异常、云加速拦截 | 兼容模式导入入口（无 accept） |
+| QQ 浏览器 / 微信内置 | X5（TBS） | accept 过滤异常；旧设备内核可能低至 Chromium 53（不支持 async/await） | 兼容模式导入 + 启动守卫提示「内核过旧」 |
+| 华为 / 荣耀浏览器 | 自有内核（Chromium 系） | 无已知问题 | — |
+| vivo / 小米 / OPPO 浏览器 | Chromium 系 | 通知栏下载入口差异 | 导出走 Web Share → 下载兜底 |
+| 百度 / 360 浏览器 | Chromium 系 | accept 过滤偶发异常 | 兼容模式导入 |
+
+> 说明：上表基于各浏览器的公开内核信息与已知社区问题整理；**未在真机上逐台验证**（本仓库开发环境无 Android 设备）。`compat.html` 的作用正是让用户一条链接跑出该设备的真实能力报告。
+
+### 打不开 / 导入不了怎么办
+
+1. **页面打不开**：先换网络（Wi-Fi / 移动数据）与浏览器（Chrome / Edge / 夸克新版）；仍不行用第二入口（GitHub Pages 部署后见仓库首页链接）。
+2. **点导入没反应 / 选择器里没有文件**：点「选不到文件？用兼容模式选择」——该入口不设 `accept` 过滤，任何支持文件选择的浏览器都会弹出选择器。
+3. **白屏或提示「应用没能正常启动」**：页面顶部守卫提示会给出原因；点「① 运行兼容性自检」，把报告复制回传即可定位（报告只含 UA 与能力项，不含隐私数据）。
 
 ## 维护者工具
 
