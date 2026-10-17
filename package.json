@@ -1,6 +1,6 @@
 {
   "name": "audio-merge-lab",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "跨平台录音合并工具（iOS / Android / Web，纯本地处理，WAV/MP3/M4A 输出）",
   "scripts": {

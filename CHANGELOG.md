@@ -4,6 +4,18 @@
 
 ---
 
+## V0.2.2 — 2026-10-17
+
+修复 iOS Chrome 导入无反应的兼容性缺陷（用户实测反馈：iOS 16 + App Store 最新版 Chrome 点「导入」无任何反应，Safari 正常）。
+
+### 🐛 修复
+
+- **导入按钮改用 `<label for="fileInput">` 原生激活**：原实现是按钮 JS 调 `fileInput.click()` + input 带 `hidden`（display:none）。iOS 上所有第三方浏览器被苹果强制使用 WKWebView 渲染，而 WKWebView 会静默忽略对 `display:none` 的 file input 的程序化点击（点击事件到不了 input），移动 Safari 却容忍该写法——这精确解释了「Safari 秒导入、Chrome iOS 点死」的现象
+- **file input 从 `hidden` 改为视觉隐藏**（`.file-input-hidden`：1px + clip，保留布局盒子）：WKWebView 要求 input 不能被 `display:none` / `visibility:hidden` 隐藏
+- app.js 中移除 `fileInput.click()` 程序化调用（label 关联后浏览器原生激活，无需 JS；预热逻辑保留在 label 的 click 处理里）
+
+---
+
 ## V0.2.1 — 2026-10-17
 
 导入性能优化（用户实测反馈驱动：长文件导入慢、直接录音却正常）。用真实文件在 Edge 里分阶段计时定位：解码 `decodeAudioData` 占约 1.5 秒且与时长基本无关，属浏览器原生解码器的固定开销；录音之所以不慢是因为它走的是同一条解码路径但文件短、且解码发生在录音结束的等待里。

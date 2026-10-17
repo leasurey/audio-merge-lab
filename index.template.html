@@ -28,10 +28,12 @@
   <section class="card">
     <h2>1. 添加片段</h2>
     <div class="btn-row">
-      <button class="btn primary" id="btnImport" type="button">导入音频文件</button>
+      <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
+           不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
+      <label class="btn primary" id="btnImport" for="fileInput">导入音频文件</label>
       <button class="btn ghost" id="btnRecord" type="button">开始录音</button>
     </div>
-    <input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple hidden>
+    <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
     <div class="rec-indicator">
       <span class="rec-dot" id="recordDot" hidden></span>
       <span id="recordTime"></span>

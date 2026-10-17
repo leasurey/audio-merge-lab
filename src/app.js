@@ -850,9 +850,11 @@
 
   /* ---------------- 事件绑定 ---------------- */
   function bind() {
+    // 导入按钮是 <label for="fileInput">：点击由浏览器原生激活 file input，
+    // 不需要（也不能）用 JS 调 fileInput.click()——iOS WKWebView 会静默忽略
+    // 对视觉隐藏 input 的程序化点击。这里只做管线预热。
     $('btnImport').addEventListener('click', function () {
       warmAudioPipeline(); // 文件选择器打开前预热（移动端选择器要数秒）
-      $('fileInput').click();
     });
 
     $('fileInput').addEventListener('change', function (e) {

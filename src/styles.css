@@ -15,7 +15,7 @@
 
 * { box-sizing: border-box; }
 
-button { user-select: none; -webkit-user-select: none; }
+button, .btn { user-select: none; -webkit-user-select: none; }
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -130,6 +130,20 @@ header.app-header p {
   gap: 10px;
 }
 .btn-row .btn { flex: 1; }
+
+/* file input 视觉隐藏：保留布局盒子（非 display:none），
+   iOS WKWebView 才认这个 input——label[for] 点击时原生激活它 */
+.file-input-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ---------- 录音指示 ---------- */
 .rec-indicator {
