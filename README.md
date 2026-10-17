@@ -2,7 +2,7 @@
 
 纯本地、跨 iOS / Android / Web 的录音合并工具。一套前端代码，三端运行（浏览器 / PWA / Capacitor 原生壳）；所有音频处理都在设备本地完成，不上传任何数据。
 
-- 版本：**V0.3.1**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
+- 版本：**V0.3.2**（版本唯一权威值见 `src/audio-core.js` 的 `APP_VERSION`）
 - 作者：**k** · [B 站主页](https://space.bilibili.com/527557440)
 - 目标平台：iOS Safari / Android Chrome / 桌面浏览器（PWA 可安装）
 - 界面语言：中文
@@ -184,6 +184,20 @@ iOS 后台持续录音：Xcode → Signing & Capabilities → Background Modes �
 | 百度 / 360 浏览器 | Chromium 系 | accept 过滤偶发异常 | 兼容模式导入 |
 
 > 说明：上表基于各浏览器的公开内核信息与已知社区问题整理；**未在真机上逐台验证**（本仓库开发环境无 Android 设备）。`compat.html` 的作用正是让用户一条链接跑出该设备的真实能力报告。
+
+### 解码降级链（V0.3.2）
+
+平台 `decodeAudioData` 在部分环境会失败（Android 厂商内核、桌面 Chrome 的 AAC、带异常标签的 MP3 等）。导入失败后不再直接报错，而是：
+
+| 顺序 | 路径 | 说明 |
+|---|---|---|
+| 1 | 平台 `decodeAudioData` | 正常路径，最快；成功时零额外开销 |
+| 2 | 格式嗅探（魔数） | 判断实际容器/编码，决定下一步与错误措辞 |
+| 3 | WAV → 自研 RIFF 解析 | 支持 8/16/24/32bit PCM 与 float32/64，容忍未知块/乱序块 |
+| 4 | MPEG → 内置 mpg123（WASM） | 78KB，惰性初始化；正常路径完全不加载 |
+| 5 | 其他格式 | 明确提示检测结果 + 转换建议（AMR/SILK/WMA/APE/CAF/AAC-ADTS 等） |
+
+失败信息包含文件大小、检测到的格式与建议，例如：`检测为 MP3（MPEG Layer III，含 ID3 标签）`。
 
 ### 打不开 / 导入不了怎么办
 

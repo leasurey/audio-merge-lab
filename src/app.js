@@ -300,33 +300,153 @@
     });
   }
 
+  /* ---------------- 解码降级链（V0.3.2） ----------------
+   * 平台 decodeAudioData 在部分环境会失败（Android 厂商内核、桌面 Chrome 的
+   * AAC、含异常标签的 MP3 等）。失败后按魔数嗅探实际格式，能用内置解析器的
+   * 直接解：WAV → 自研 RIFF 解析器；MP3 → mp3 解码器（lamejs 只编码，
+   * 因此内置 wasm 版 mpg123）。仍不支持的格式给出精确原因与建议。
+   * ------------------------------------------------------ */
+  var mp3DecoderLib = null;
+  var mp3DecoderPromise = null;
+
+  /** 从内联 base64 还原并执行 mpg123-decoder（NUL 安全，原因见 build.js 注释） */
+  function loadMp3DecoderModule() {
+    if (window['mpg123-decoder']) return;
+    var b64 = window.__MP3DEC_B64;
+    if (!b64) throw new Error('内置解码器未随页面加载');
+    if (typeof TextDecoder !== 'function') {
+      throw new Error('浏览器缺少 TextDecoder，无法启用内置解码器');
+    }
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var src = new TextDecoder('utf-8').decode(bytes);
+    (0, eval)(src); // 间接 eval：在全局作用域执行 UMD，挂载 window['mpg123-decoder']
+  }
+
+  /** 惰性初始化内置 MP3 解码器（仅在平台解码失败时加载，不增加正常路径成本） */
+  function getMp3Decoder() {
+    if (mp3DecoderPromise) return mp3DecoderPromise;
+    try {
+      loadMp3DecoderModule();
+    } catch (e) {
+      mp3DecoderPromise = Promise.reject(e);
+      return mp3DecoderPromise;
+    }
+    var lib = window['mpg123-decoder'];
+    if (!lib || typeof lib.MPEGDecoder !== 'function') {
+      mp3DecoderPromise = Promise.reject(new Error('内置 MP3 解码器未加载'));
+      return mp3DecoderPromise;
+    }
+    mp3DecoderLib = new lib.MPEGDecoder();
+    mp3DecoderPromise = mp3DecoderLib.ready.then(function () { return mp3DecoderLib; });
+    return mp3DecoderPromise;
+  }
+
+  /**
+   * 兜底解码：按嗅探到的实际格式选择内置解析器。
+   * @param {Uint8Array} bytes 文件字节
+   * @param {Object} info sniffFormat 结果
+   * @returns {Promise<{pcm:Object, decoder:string}|null>} null = 该格式无内置解析器
+   */
+  async function fallbackDecode(bytes, info) {
+    if (info.container === 'wav') {
+      return { pcm: AudioCore.decodeWav(bytes), decoder: 'wav' };
+    }
+    if (info.container === 'mp3') {
+      var dec = await getMp3Decoder();
+      var out = await dec.decode(bytes);
+      if (!out || !out.samplesDecoded || !out.channelData || !out.channelData.length) {
+        throw new Error('内置 MP3 解码器未产出音频数据');
+      }
+      // mpg123 会把单声道上混为双声道；channelData 是每次 decode 新分配的
+      // Float32Array（非 wasm 堆视图），可直接作为 PCM 声道持有
+      return {
+        pcm: { sampleRate: out.sampleRate, channels: out.channelData },
+        decoder: 'mpg123'
+      };
+    }
+    return null;
+  }
+
   async function decodeSegment(seg) {
     try {
       var buf = await readAsArrayBuffer(seg.blob);
       await getCtx();
-      var audioBuf = await decodeAudioData(buf);
+      var bytes = new Uint8Array(buf);
+      var audioBuf = null;
+      var primaryErr = null;
+      try {
+        audioBuf = await decodeAudioData(buf);
+      } catch (e) {
+        primaryErr = e; // 平台解码器失败 → 走降级链
+      }
       // 解码期间该片段可能已被移除
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
-      seg.pcm = audioBufferToPcm(audioBuf);
-      seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用，且与 pcm 视图共享同一块内存
-      seg.duration = audioBuf.duration;
-      seg.sampleRate = audioBuf.sampleRate;
-      seg.channels = audioBuf.numberOfChannels;
-      seg.decoding = false;
-      renderList();
-      var rest = decodeQueue.length;
-      setStatus('已解码「' + seg.name + '」（' + fmtTime(seg.duration) + '）' +
-        (rest > 0 ? '，队列还剩 ' + rest + ' 个' : '') +
-        '。当前共 ' + state.segments.length + ' 段，合计 ' + fmtTime(totalDuration()));
+
+      if (audioBuf) {
+        seg.pcm = audioBufferToPcm(audioBuf);
+        seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
+        seg.duration = audioBuf.duration;
+        seg.sampleRate = audioBuf.sampleRate;
+        seg.channels = audioBuf.numberOfChannels;
+        seg.decoding = false;
+        renderList();
+        var rest = decodeQueue.length;
+        setStatus('已解码「' + seg.name + '」（' + fmtTime(seg.duration) + '）' +
+          (rest > 0 ? '，队列还剩 ' + rest + ' 个' : '') +
+          '。当前共 ' + state.segments.length + ' 段，合计 ' + fmtTime(totalDuration()));
+        return;
+      }
+
+      // ---- 降级链 ----
+      var info = AudioCore.sniffFormat(bytes);
+      seg.sniff = info;
+      var fb = null, fbErr = null;
+      try {
+        fb = await fallbackDecode(bytes, info);
+      } catch (e2) {
+        fbErr = e2;
+      }
+      if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+      if (fb) {
+        seg.pcm = fb.pcm;
+        seg.audioBuffer = null; // 无 AudioBuffer，M4A 路径会按 PCM 重建
+        seg.duration = AudioCore.pcmDurationSec(fb.pcm);
+        seg.sampleRate = fb.pcm.sampleRate;
+        seg.channels = fb.pcm.channels.length;
+        seg.decoding = false;
+        seg.usedFallback = true;
+        renderList();
+        setStatus('「' + seg.name + '」平台解码器不支持，已用内置解码器（' +
+          (fb.decoder === 'mpg123' ? 'MP3/MPEG' : 'WAV') + '）解码完成：' +
+          fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
+        return;
+      }
+      // 无内置解析器：抛出带格式信息与建议的错误
+      throw decorateDecodeError(seg, info, primaryErr, fbErr);
     } catch (err) {
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
       seg.decoding = false;
       seg.failed = true;
       seg.errorMsg = err && err.message ? err.message : String(err);
       renderList();
-      setStatus('「' + seg.name + '」解码失败：' + seg.errorMsg +
-        '（' + decodeFailHint(seg.name) + '）', true);
+      setStatus(seg.errorMsg, true);
     }
+  }
+
+  /** 组装可操作的解码失败信息（含文件大小、检测格式、建议） */
+  function decorateDecodeError(seg, info, primaryErr, fbErr) {
+    var sizeTxt = seg.blob && typeof seg.blob.size === 'number' ? fmtSize(seg.blob.size) : '大小未知';
+    var reason = primaryErr && primaryErr.message ? primaryErr.message : '平台解码器拒绝该文件';
+    var parts = [
+      '「' + seg.name + '」解码失败：' + reason,
+      '（文件 ' + sizeTxt + ' · 检测为 ' + (info.label || '未知格式') + '）'
+    ];
+    if (info.advice) parts.push('。建议：' + info.advice);
+    else if (fbErr) parts.push('。内置解析器也失败：' + (fbErr.message || fbErr));
+    else parts.push('。可能是文件损坏或不完整，可尝试重新导出该文件，或点下方「兼容模式」重新选择');
+    return new Error(parts.join(''));
   }
 
   function removeSegment(id) {
@@ -518,7 +638,8 @@
       } else if (seg.failed) {
         meta = '解码失败：' + (seg.errorMsg || '格式不支持');
       } else {
-        meta = seg.source + ' · ' + fmtTime(seg.duration) +
+        meta = seg.source + (seg.usedFallback ? '（内置解码）' : '') + ' · ' +
+          fmtTime(seg.duration) +
           ' · ' + Math.round(seg.sampleRate / 1000) + 'kHz · ' +
           (seg.channels === 1 ? '单声道' : seg.channels + ' 声道');
       }
@@ -560,22 +681,6 @@
     return isWeChat()
       ? '。微信内置浏览器限制较多，请点右上角 ⋯ 选择「用默认浏览器打开」'
       : '';
-  }
-
-  /**
-   * 解码失败的兼容性提示：只列已知且已核实的平台缺口，不做猜测性断言。
-   * 桌面版 Chrome 因 AAC 专利授权问题不解码 m4a/aac 是确证事实；
-   * 其余情况给通用建议。
-   */
-  function decodeFailHint(name) {
-    var lower = (name || '').toLowerCase();
-    var ua = navigator.userAgent;
-    var isDesktopChrome = /Chrome|Chromium/.test(ua) &&
-      !/Mobile|Android|iPhone|iPad|iPod/.test(ua);
-    if (/\.(m4a|aac|mp4)(\?|#|$)/.test(lower) && isDesktopChrome) {
-      return '桌面版 Chrome 不解码 AAC：请改用手机浏览器 / Safari 打开，或先将该文件转为 MP3 / WAV';
-    }
-    return '该格式可能不被当前浏览器支持，可移除该片段';
   }
 
   function pickMimeType() {

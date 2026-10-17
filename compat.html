@@ -87,6 +87,13 @@
   </section>
 
   <section class="card">
+    <h2>文件诊断（可选）</h2>
+    <p class="hint">选一个导入失败的文件：本页会显示它的大小、真实格式（魔数嗅探），并测试本机能否解码。文件只在本地读取，不会上传。</p>
+    <input type="file" id="diagFile" style="width:100%;margin-top:8px;color:#cfd5de;font-size:13px;">
+    <div class="kv" id="diagOut" style="margin-top:10px;"></div>
+  </section>
+
+  <section class="card">
     <h2>复制诊断信息</h2>
     <p class="hint">遇到问题时把下面内容复制回传即可（不含任何个人数据）。</p>
     <textarea id="report" readonly rows="9"></textarea>
@@ -328,6 +335,100 @@
     } else {
       fallback();
     }
+  };
+
+  /* ---------------- 文件诊断（ES5） ---------------- */
+  var diagFile = document.getElementById('diagFile');
+  var diagOut = document.getElementById('diagOut');
+  var diagLines = [];
+
+  function diagLine(label, value, color) {
+    var d = document.createElement('div');
+    d.style.margin = '3px 0';
+    var b = document.createElement('b');
+    b.textContent = label + '：';
+    d.appendChild(b);
+    var s = document.createElement('span');
+    s.textContent = value;
+    if (color) s.style.color = color;
+    d.appendChild(s);
+    diagOut.appendChild(d);
+    diagLines.push(label + '：' + value);
+    report.value = buildReport() + '\n---- 文件诊断 ----\n' + diagLines.join('\n');
+  }
+
+  /** 与 audio-core.js 的 sniffFormat 同源的 ES5 精简版（自检页独立可用） */
+  function diagSniff(bytes) {
+    function ascii(off, len) {
+      var s = '';
+      for (var i = 0; i < len && off + i < bytes.length; i++) s += String.fromCharCode(bytes[off + i]);
+      return s;
+    }
+    if (!bytes || bytes.length === 0) return '空文件（0 字节）';
+    if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WAVE') return 'WAV（PCM 音频）';
+    if (bytes.length >= 3 && ascii(0, 3) === 'ID3') return 'MP3（MPEG Layer III，含 ID3 标签）';
+    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] === 0xF1 || bytes[1] === 0xF9)) return 'AAC 裸流（ADTS）';
+    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0 && ((bytes[1] >> 1) & 3) !== 0) {
+      // MPEG layer 位：1=Layer III，2=Layer II，3=Layer I
+      var layers = ['', 'III', 'II', 'I'];
+      return 'MPEG 音频（Layer ' + layers[(bytes[1] >> 1) & 3] + '）';
+    }
+    if (bytes.length >= 8 && ascii(4, 4) === 'ftyp') return 'M4A/MP4（AAC 容器）';
+    if (bytes.length >= 4 && ascii(0, 4) === 'OggS') return 'OGG（Opus / Vorbis）';
+    if (bytes.length >= 4 && ascii(0, 4) === 'fLaC') return 'FLAC（无损）';
+    if (bytes.length >= 5 && ascii(0, 5) === '#!AMR') return 'AMR（通话录音常见格式）';
+    if (bytes.length >= 4 && bytes[0] === 0x1A && bytes[1] === 0x45 && bytes[2] === 0xDF && bytes[3] === 0xA3) return 'WebM';
+    if (bytes.length >= 16 && bytes[0] === 0x30 && bytes[1] === 0x26 && bytes[2] === 0xB2 && bytes[3] === 0x75) return 'WMA（ASF 容器）';
+    if (ascii(0, 5).indexOf('SILK') !== -1 || ascii(1, 5).indexOf('SILK') !== -1) return 'SILK（微信语音）';
+    return '未知格式';
+  }
+
+  diagFile.onchange = function () {
+    var f = diagFile.files && diagFile.files[0];
+    diagOut.innerHTML = '';
+    diagLines = [];
+    if (!f) return;
+    diagLine('文件名', f.name || '(无)');
+    diagLine('大小', f.size + ' B（' + (f.size / 1024 / 1024).toFixed(2) + ' MB）');
+    diagLine('MIME', f.type || '(浏览器未提供)');
+    var reader = new FileReader();
+    reader.onload = function () {
+      var buf = reader.result;
+      var bytes = new Uint8Array(buf);
+      var hex = [];
+      for (var i = 0; i < Math.min(16, bytes.length); i++) {
+        hex.push((bytes[i] < 16 ? '0' : '') + bytes[i].toString(16));
+      }
+      diagLine('前 16 字节', hex.join(' '));
+      diagLine('嗅探格式', diagSniff(bytes));
+
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { diagLine('平台解码', '缺少 AudioContext，无法测试', '#ff9d94'); return; }
+      var ctx;
+      try { ctx = new AC(); } catch (e) {
+        diagLine('平台解码', 'AudioContext 创建失败：' + e.message, '#ff9d94');
+        return;
+      }
+      try {
+        var ret = ctx.decodeAudioData(buf, function (ab) {
+          diagLine('平台解码', '成功（' + ab.duration.toFixed(2) + 's / ' + ab.sampleRate +
+            'Hz / ' + ab.numberOfChannels + ' 声道）', '#6fd7a2');
+          diagLine('结论', '本机可解码；若应用内仍失败，请把本报告回传', '#6fd7a2');
+        }, function (err) {
+          diagLine('平台解码', '失败：' + ((err && err.message) || 'EncodingError'), '#ff9d94');
+          diagLine('结论', '本机解码器不支持该文件——应用会用内置解码器重试（WAV / MP3）；其他格式需先转换', '#f0d08a');
+        });
+        if (ret && ret.then) {
+          ret.catch(function (e) {
+            diagLine('平台解码', '失败：' + ((e && e.message) || e), '#ff9d94');
+          });
+        }
+      } catch (e2) {
+        diagLine('平台解码', '异常：' + e2.message, '#ff9d94');
+      }
+    };
+    reader.onerror = function () { diagLine('读取', '失败：无法读取文件', '#ff9d94'); };
+    reader.readAsArrayBuffer(f);
   };
 })();
 </script>

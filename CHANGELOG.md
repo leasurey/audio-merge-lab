@@ -4,6 +4,47 @@
 
 ---
 
+## V0.3.2 — 2026-10-17
+
+导入解码兼容性（用户反馈：Android Edge 上导入 MP3 报 `Unable to decode audio data`）。
+
+### 🔍 排查结论
+
+- 出错文件为普通 MPEG-1 Layer III（48kHz / 64kbps CBR，帧扫描全程无坏帧），
+  桌面 Edge 可正常解码 → **问题在平台解码器/解复用层，不在文件本身**
+- 原实现只有一条解码路径（`decodeAudioData`），失败即报错，且错误信息不包含
+  文件实际格式——无法区分"格式不支持"与"文件损坏/不完整"
+
+### ✨ 新增
+
+- **解码降级链**：`decodeAudioData` 失败后按魔数嗅探实际格式，自动改用内置解析器
+  - **WAV** → 自研 RIFF 解析器（`AudioCore.decodeWav`）：支持 PCM 8/16/24/32bit
+    与 IEEE float 32/64bit，容忍未知块、乱序块、奇数长度块
+  - **MP3/MPEG** → 内置 `mpg123-decoder`（WASM，MIT，78KB，惰性初始化，正常路径零成本）
+  - 其余格式 → 明确报出检测结果与可操作建议（AMR / SILK / WMA / APE / CAF 等）
+- **`AudioCore.sniffFormat`**：魔数识别 WAV / MP3(ID3、帧同步) / M4A(ftyp) / OGG /
+  FLAC / AMR / AAC-ADTS / WebM / WMA / APE / AIFF / CAF / SILK / 空文件
+- **精确失败信息**：包含文件名、文件大小、检测到的格式与针对性建议；
+  成功降级时状态栏与列表标注「内置解码」
+
+### ⚠️ 实现注意（踩坑记录）
+
+- mpg123-decoder 的 wasm 载荷用 `String.raw` 内嵌，其中含**裸 NUL(U+0000) 字节**。
+  HTML 解析器规范会把脚本数据中的 U+0000 替换为 U+FFFD，直接内联会导致
+  运行时 `Decode failed crc32 validation`（WASM 载荷损坏）。
+  因此该库以 **base64 包装内联**，运行时惰性 `atob + TextDecoder + eval` 还原；
+  构建脚本增加终局校验：产物含 NUL 即报错
+
+### 🧪 测试
+
+- 新增 7 项核心测试：嗅探 12 类样本、label 非空约束、WAV 8/16/24bit 与 float32
+  round-trip、LIST 块与乱序块容忍、非法输入抛错
+- 全部 **41 项核心 + 9 项 MP3** 测试通过
+- Edge e2e：人为令 `decodeAudioData` 抛错，验证降级链用 mpg123 成功解码真实
+  5:34 MP3（334.1s / 48kHz / 零错误）并正确标注「内置解码」
+
+---
+
 ## V0.3.1 — 2026-10-17
 
 Android 生态兼容性工程（用户反馈：他人用夸克浏览器打开显示「网页打不开」；部分浏览器导入失效）。

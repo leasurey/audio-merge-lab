@@ -3,6 +3,7 @@
 | 组件 | 用途 | 许可 | 来源 |
 |---|---|---|---|
 | lamejs（`src/vendor/lame.min.js`） | MP3 编码 | LGPL-3.0 | [zhuker/lamejs](https://github.com/zhuker/lamejs) |
+| mpg123-decoder（`src/vendor/mpg123-decoder.min.js`） | MP3 兜底解码（平台解码器失败时） | MIT | [eshaz/wasm-audio-decoders](https://github.com/eshaz/wasm-audio-decoders) → npm `mpg123-decoder@1.0.3` |
 
 ## lamejs
 
@@ -20,6 +21,17 @@
 - **合规提示**：lamejs 为 LGPL-3.0。以本仓库成果分发时，需向接收方提供该
   组件的源码获取方式——本仓库通过保留上游链接满足此要求。若计划闭源商业
   分发，请咨询律师确认合规路径。
+
+## mpg123-decoder
+
+- **文件**：`src/vendor/mpg123-decoder.min.js`（取自 npm 包 `mpg123-decoder@1.0.3` 的
+  `dist/mpg123-decoder.min.js`，UMD 构建，内含 base64 内联的 wasm）
+- **上游仓库**：https://github.com/eshaz/wasm-audio-decoders
+- **许可**：MIT（Copyright 2021-2025 Ethan Halsall）
+- **用途**：仅在平台 `decodeAudioData` 失败且文件被识别为 MPEG 音频时启用，
+  作为兜底解码路径；正常路径不加载其 wasm 实例
+- **注意**：该文件包含一段经编码的内联 WebAssembly 体积（MP3 解码内核），
+  这是其体积来源；构建时校验其不含 `<script` 序列以安全内联
 
 ## 应用图标
 

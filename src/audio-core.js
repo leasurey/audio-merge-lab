@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.3.1';
+  var APP_VERSION = '0.3.2';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -643,6 +643,183 @@
     return out;
   }
 
+  /* ------------------------------------------------------------------ *
+   * 格式嗅探与兜底解码（V0.3.2）
+   *
+   * 平台 decodeAudioData 失败时（Android 各厂商内核、桌面 Chrome 的 AAC 等），
+   * 先用魔数判断"实际是什么格式"，再决定：
+   *   - 能用内置解析器的（WAV / MP3）直接解；
+   *   - 不能的，给出精确原因与可操作建议，而不是笼统的“解码失败”。
+   * ------------------------------------------------------------------ */
+
+  /**
+   * 魔数嗅探：识别容器 / 编码。
+   * @param {Uint8Array} bytes
+   * @returns {{container:string, codec:string, label:string, advice:string}}
+   */
+  function sniffFormat(bytes) {
+    function ascii(off, len) {
+      var s = '';
+      for (var i = 0; i < len && off + i < bytes.length; i++) {
+        s += String.fromCharCode(bytes[off + i]);
+      }
+      return s;
+    }
+    if (!bytes || bytes.length === 0) {
+      return {
+        container: 'empty', codec: '',
+        label: '空文件（0 字节）',
+        advice: '可能是云盘文件未下载完成，或读取被系统拦截；请先把文件保存到本机再导入'
+      };
+    }
+    var unknown = { container: 'unknown', codec: '', label: '未知格式', advice: '' };
+    if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WAVE') {
+      return { container: 'wav', codec: 'pcm', label: 'WAV（PCM 音频）', advice: '' };
+    }
+    if (bytes.length >= 3 && ascii(0, 3) === 'ID3') {
+      return { container: 'mp3', codec: 'mpeg-layer3', label: 'MP3（MPEG Layer III，含 ID3 标签）', advice: '' };
+    }
+    // AAC 裸流（ADTS）同步字 0xFFF1 / 0xFFF9，必须先于通用 MPEG 判断
+    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] === 0xF1 || bytes[1] === 0xF9)) {
+      return {
+        container: 'aac-adts', codec: 'aac',
+        label: 'AAC 裸流（ADTS）',
+        advice: '浏览器对裸 AAC 流支持有限，建议转为 M4A 或 MP3'
+      };
+    }
+    if (bytes.length >= 2 && bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0) {
+      var layer = (bytes[1] >> 1) & 3;
+      if (layer !== 0) { // layer=0 为保留值，不是合法 MPEG 音频帧
+        var layerName = layer === 1 ? 'Layer III' : (layer === 2 ? 'Layer II' : 'Layer I');
+        return { container: 'mp3', codec: 'mpeg-' + layerName.toLowerCase(), label: 'MPEG 音频（' + layerName + '）', advice: '' };
+      }
+    }
+    if (bytes.length >= 8 && ascii(4, 4) === 'ftyp') {
+      var brand = ascii(8, 4).replace(/[^\x20-\x7e]/g, '');
+      return {
+        container: 'mp4', codec: 'aac',
+        label: 'M4A/MP4 容器（' + (brand || '未知品牌') + '，音频通常为 AAC）',
+        advice: '桌面版 Chrome/Edge 不解码 AAC；手机上如仍失败，请转为 MP3 或 WAV'
+      };
+    }
+    if (bytes.length >= 4 && ascii(0, 4) === 'OggS') {
+      return { container: 'ogg', codec: 'opus-or-vorbis', label: 'OGG（Opus / Vorbis）', advice: '' };
+    }
+    if (bytes.length >= 4 && ascii(0, 4) === 'fLaC') {
+      return { container: 'flac', codec: 'flac', label: 'FLAC（无损）', advice: '' };
+    }
+    if (bytes.length >= 5 && ascii(0, 5) === '#!AMR') {
+      return {
+        container: 'amr', codec: 'amr',
+        label: 'AMR（手机通话录音常见格式）',
+        advice: '浏览器普遍不支持 AMR，请在手机上用「录音机」或格式转换工具转为 MP3 / WAV'
+      };
+    }
+    if (bytes.length >= 4 && bytes[0] === 0x1A && bytes[1] === 0x45 && bytes[2] === 0xDF && bytes[3] === 0xA3) {
+      return { container: 'webm', codec: 'opus-or-vorbis', label: 'WebM（Opus / Vorbis）', advice: '' };
+    }
+    if (bytes.length >= 16 && bytes[0] === 0x30 && bytes[1] === 0x26 && bytes[2] === 0xB2 && bytes[3] === 0x75) {
+      return { container: 'asf', codec: 'wma', label: 'WMA（Windows Media Audio）', advice: '浏览器不支持 WMA，请转为 MP3 / WAV' };
+    }
+    if (bytes.length >= 4 && ascii(0, 4) === 'MAC ') {
+      return { container: 'ape', codec: 'ape', label: 'APE（Monkey\'s Audio 无损）', advice: '浏览器不支持 APE，请转为 FLAC / MP3' };
+    }
+    if (bytes.length >= 12 && ascii(0, 4) === 'FORM' && (ascii(8, 4) === 'AIFF' || ascii(8, 4) === 'AIFC')) {
+      return { container: 'aiff', codec: 'pcm', label: 'AIFF（PCM 音频）', advice: '浏览器支持有限，建议转为 WAV' };
+    }
+    if (bytes.length >= 4 && ascii(0, 4) === 'caff') {
+      return { container: 'caf', codec: 'alac-or-pcm', label: 'CAF（Apple 音频容器）', advice: '浏览器不支持 CAF，建议转为 WAV / MP3' };
+    }
+    if (ascii(0, 5).indexOf('SILK') !== -1 || ascii(1, 5).indexOf('SILK') !== -1) {
+      return { container: 'silk', codec: 'silk', label: 'SILK（微信语音格式）', advice: '微信语音为 SILK 编码，需先导出为 MP3 / WAV' };
+    }
+    return unknown;
+  }
+
+  /**
+   * 手动解析 WAV（RIFF/WAVE）——平台解码器失败时的兜底。
+   * 支持 PCM 8/16/24/32bit 与 IEEE float 32/64bit，容忍未知块、乱序块与奇数长度块。
+   * @param {Uint8Array} bytes
+   * @returns {{sampleRate:number, channels:Float32Array[]}}
+   */
+  function decodeWav(bytes) {
+    if (!bytes || bytes.length < 44) throw new Error('WAV 文件过短');
+    function u16(off) { return bytes[off] | (bytes[off + 1] << 8); }
+    function u32(off) {
+      return (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
+    }
+    function str(off, len) {
+      var s = '';
+      for (var i = 0; i < len; i++) s += String.fromCharCode(bytes[off + i]);
+      return s;
+    }
+    if (str(0, 4) !== 'RIFF' || str(8, 4) !== 'WAVE') throw new Error('不是 RIFF/WAVE 文件');
+
+    var pos = 12, fmt = null, dataOff = -1, dataLen = 0;
+    while (pos + 8 <= bytes.length) {
+      var id = str(pos, 4);
+      var size = u32(pos + 4);
+      var body = pos + 8;
+      if (id === 'fmt ' && size >= 16) {
+        var audioFormat = u16(body);
+        var numChannels = u16(body + 2);
+        var sampleRate = u32(body + 4);
+        var bitsPerSample = u16(body + 14);
+        // WAVE_FORMAT_EXTENSIBLE：真实格式在子格式 GUID 的前 2 字节
+        if (audioFormat === 0xFFFE && size >= 40) audioFormat = u16(body + 24);
+        fmt = {
+          audioFormat: audioFormat,
+          numChannels: numChannels,
+          sampleRate: sampleRate,
+          bitsPerSample: bitsPerSample
+        };
+      } else if (id === 'data') {
+        dataOff = body;
+        dataLen = Math.min(size, bytes.length - body);
+        if (fmt) break; // fmt 与 data 都拿到即可收工（不依赖块顺序）
+      }
+      pos = body + size + (size & 1); // RIFF 块按偶数字节对齐
+    }
+    if (!fmt) throw new Error('WAV 缺少 fmt 块');
+    if (dataOff < 0) throw new Error('WAV 缺少 data 块');
+    if (!fmt.numChannels || fmt.numChannels > 8) throw new Error('WAV 声道数异常: ' + fmt.numChannels);
+    if (!fmt.sampleRate) throw new Error('WAV 采样率异常');
+    var bytesPerSample = fmt.bitsPerSample / 8;
+    if ([1, 2, 3, 4, 8].indexOf(bytesPerSample) === -1) {
+      throw new Error('WAV 位深不支持: ' + fmt.bitsPerSample);
+    }
+    var blockAlign = fmt.numChannels * bytesPerSample;
+    var frames = Math.floor(dataLen / blockAlign);
+    if (frames <= 0) throw new Error('WAV 无可解析的采样数据');
+
+    var channels = [];
+    for (var c = 0; c < fmt.numChannels; c++) channels.push(new Float32Array(frames));
+    var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    var isFloat = fmt.audioFormat === 3;
+    var i, off, v, s;
+    for (i = 0; i < frames; i++) {
+      for (c = 0; c < fmt.numChannels; c++) {
+        off = dataOff + i * blockAlign + c * bytesPerSample;
+        if (isFloat) {
+          v = bytesPerSample === 4 ? dv.getFloat32(off, true)
+            : (bytesPerSample === 8 ? dv.getFloat64(off, true) : 0);
+        } else if (bytesPerSample === 1) {
+          v = (bytes[off] - 128) / 128; // 8bit WAV 为无符号
+        } else if (bytesPerSample === 2) {
+          v = dv.getInt16(off, true) / 32768;
+        } else if (bytesPerSample === 3) {
+          s = bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16);
+          if (s & 0x800000) s |= 0xff000000;
+          v = s / 8388608;
+        } else {
+          v = dv.getInt32(off, true) / 2147483648;
+        }
+        channels[c][i] = v;
+      }
+    }
+    return { sampleRate: fmt.sampleRate, channels: channels };
+  }
+
   return {
     APP_VERSION: APP_VERSION,
     DEFAULTS: DEFAULTS,
@@ -660,6 +837,8 @@
     createSegmentConverter: createSegmentConverter,
     segmentPeakAfterFade: segmentPeakAfterFade,
     planMerge: planMerge,
+    sniffFormat: sniffFormat,
+    decodeWav: decodeWav,
     floatToInt16: floatToInt16,
     pcmToInt16Channels: pcmToInt16Channels,
     encodeMP3: encodeMP3

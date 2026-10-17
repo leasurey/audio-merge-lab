@@ -22,9 +22,18 @@ const dist = (p) => path.join(root, 'dist', p);
 /* ---------------- 1. 单文件 HTML ---------------- */
 let html = read('index.template.html');
 
+/* mpg123-decoder 的 wasm 载荷是 String.raw 模板串，其中含裸 NUL(U+0000) 字节。
+ * HTML 解析器规范要求把脚本数据中的 U+0000 替换为 U+FFFD —— 直接内联会导致
+ * 载荷损坏（运行时 "Decode failed crc32 validation"）。
+ * 因此改为 base64 包装：NUL 变成 ASCII 的 'AA=='，HTML 解析器不会再改写；
+ * 运行时由 app.js 惰性 atob + TextDecoder + eval 还原（仅兜底解码时执行）。 */
+const mp3decSrc = read('src/vendor/mpg123-decoder.min.js');
+const mp3decB64 = Buffer.from(mp3decSrc, 'utf8').toString('base64');
+
 const inject = [
   ['/*GUARD*/', read('src/boot-guard.js')],
   ['/*VENDOR*/', read('src/vendor/lame.min.js')],
+  ['/*MP3DEC*/', 'window.__MP3DEC_B64 = "' + mp3decB64 + '";'],
   ['/*STYLES*/', read('src/styles.css')],
   ['/*CORE*/', read('src/audio-core.js')],
   ['/*APP*/', read('src/app.js')]
@@ -42,8 +51,14 @@ const leftover = inject.map(([t]) => t).filter((t) => html.includes(t));
 if (leftover.length > 0) {
   throw new Error('占位符替换不完整: ' + leftover.join(', '));
 }
-if (/<script/i.test(read('src/vendor/lame.min.js'))) {
-  throw new Error('vendor 文件含 <script，内联不安全');
+for (const vendorFile of ['src/vendor/lame.min.js', 'src/vendor/mpg123-decoder.min.js']) {
+  if (/<script/i.test(read(vendorFile))) {
+    throw new Error(vendorFile + ' 含 <script，内联不安全');
+  }
+}
+// 终局校验：产物不得含 NUL（HTML 解析器会把它替换成 U+FFFD）
+if (html.indexOf('\u0000') !== -1) {
+  throw new Error('产物含 NUL 字符：内联的脚本会被 HTML 解析器破坏');
 }
 // 启动守卫必须保持纯 ES5：它要在旧内核里执行（旧内核解析不了 app.js 的 ES2017 语法）
 const guardSrc = read('src/boot-guard.js');

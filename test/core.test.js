@@ -448,4 +448,114 @@ test('planMerge: 全空片段抛错', () => {
   ));
 });
 
+/* ---------- V0.3.2 格式嗅探与 WAV 兜底解析 ---------- */
+
+function asciiBytes(s) {
+  const a = [];
+  for (let i = 0; i < s.length; i++) a.push(s.charCodeAt(i));
+  return a;
+}
+
+test('sniffFormat: 识别常见容器/编码', () => {
+  const wav = Core.encodeWav({ sampleRate: 8000, channels: [new Float32Array(10)] }, 16);
+  assert.strictEqual(Core.sniffFormat(wav).container, 'wav');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('ID3').concat([4, 0, 0, 0, 0, 0, 0x10]))).container, 'mp3');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xFB, 0x90, 0x00])).container, 'mp3');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0, 0, 0, 0x20].concat(asciiBytes('ftyp'), asciiBytes('M4A ')))).container, 'mp4');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('OggS'))).container, 'ogg');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('fLaC'))).container, 'flac');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(asciiBytes('#!AMR'))).container, 'amr');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0x30, 0x26, 0xB2, 0x75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])).container, 'asf');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0xFF, 0xF1, 0x50, 0x80])).container, 'aac-adts');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([0x1A, 0x45, 0xDF, 0xA3])).container, 'webm');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array(0)).container, 'empty');
+  assert.strictEqual(Core.sniffFormat(new Uint8Array([1, 2, 3, 4])).container, 'unknown');
+});
+
+test('sniffFormat: 每种结果都带非空 label（错误提示依赖它）', () => {
+  const samples = [
+    Core.encodeWav({ sampleRate: 8000, channels: [new Float32Array(10)] }, 16),
+    new Uint8Array(asciiBytes('ID3')),
+    new Uint8Array([0xFF, 0xFB]),
+    new Uint8Array([0, 0, 0, 0x20].concat(asciiBytes('ftyp'), asciiBytes('M4A '))),
+    new Uint8Array(asciiBytes('#!AMR')),
+    new Uint8Array(0),
+    new Uint8Array([9, 9, 9])
+  ];
+  for (const b of samples) {
+    const r = Core.sniffFormat(b);
+    assert.ok(typeof r.label === 'string' && r.label.length > 0, JSON.stringify(r));
+    assert.ok(typeof r.advice === 'string');
+  }
+});
+
+test('decodeWav: 16bit 立体声与 encodeWav 互逆（量化误差内）', () => {
+  const src = {
+    sampleRate: 48000,
+    channels: [
+      new Float32Array([0, 0.5, -0.5, 1, -1]),
+      new Float32Array([0.25, -0.25, 0.75, -0.75, 0])
+    ]
+  };
+  const out = Core.decodeWav(Core.encodeWav(src, 16));
+  assert.strictEqual(out.sampleRate, 48000);
+  assert.strictEqual(out.channels.length, 2);
+  for (let c = 0; c < 2; c++) {
+    for (let i = 0; i < 5; i++) {
+      assert.ok(Math.abs(out.channels[c][i] - src.channels[c][i]) <= 1 / 32768,
+        `c${c} i${i}: ${out.channels[c][i]} vs ${src.channels[c][i]}`);
+    }
+  }
+});
+
+test('decodeWav: 8bit 与 24bit 在量化误差内', () => {
+  const src = { sampleRate: 8000, channels: [new Float32Array([0, 0.5, -0.5, 0.25])] };
+  const w8 = Core.decodeWav(Core.encodeWav(src, 8));
+  for (let i = 0; i < 4; i++) assert.ok(Math.abs(w8.channels[0][i] - src.channels[0][i]) <= 1 / 64);
+  const w24 = Core.decodeWav(Core.encodeWav(src, 24));
+  for (let i = 0; i < 4; i++) assert.ok(Math.abs(w24.channels[0][i] - src.channels[0][i]) <= 1 / 8388608);
+});
+
+test('decodeWav: 32bit float WAV 精确解析', () => {
+  const frames = 4, ch = 1, rate = 16000;
+  const dataSize = frames * ch * 4;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const dv = new DataView(buf);
+  const wr = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  wr(0, 'RIFF'); dv.setUint32(4, 36 + dataSize, true); wr(8, 'WAVE'); wr(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 3, true); dv.setUint16(22, ch, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * ch * 4, true);
+  dv.setUint16(32, ch * 4, true); dv.setUint16(34, 32, true); wr(36, 'data');
+  dv.setUint32(40, dataSize, true);
+  [0.5, -0.25, 1, 0].forEach((v, i) => dv.setFloat32(44 + i * 4, v, true));
+  const out = Core.decodeWav(new Uint8Array(buf));
+  assert.strictEqual(out.sampleRate, 16000);
+  assert.deepStrictEqual(Array.from(out.channels[0]), [0.5, -0.25, 1, 0]);
+});
+
+test('decodeWav: 容忍未知块（LIST）与乱序块', () => {
+  // 在 fmt 前插入一个 LIST 块，验证块遍历
+  const base = Core.encodeWav({ sampleRate: 8000, channels: [new Float32Array([0.5, -0.5])] }, 16);
+  const listSize = 6;
+  const extra = 8 + listSize + (listSize & 1);
+  const merged = new Uint8Array(base.length + extra);
+  merged.set(base.subarray(0, 12), 0);
+  // LIST 块
+  const dv = new DataView(merged.buffer);
+  merged.set(asciiBytes('LIST'), 12);
+  dv.setUint32(16, listSize, true);
+  for (let i = 0; i < listSize; i++) merged[20 + i] = 0x41;
+  merged.set(base.subarray(12), 12 + extra);
+  // 修正 RIFF 总长度
+  dv.setUint32(4, merged.length - 8, true);
+  const out = Core.decodeWav(merged);
+  assert.strictEqual(out.channels[0].length, 2);
+  assert.ok(Math.abs(out.channels[0][0] - 0.5) <= 1 / 32768);
+});
+
+test('decodeWav: 非 RIFF / 截断输入抛错', () => {
+  assert.throws(() => Core.decodeWav(new Uint8Array([1, 2, 3])));
+  assert.throws(() => Core.decodeWav(new Uint8Array(100)));
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');
