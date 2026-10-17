@@ -3,3 +3,5 @@ node_modules/
 android/
 ios/
 dist/
+# 临时校验/诊断脚本（.check-*.js 等，不入库）
+.check-*.js
