@@ -57,6 +57,7 @@ python test/verify_wav.py   # Python wave 模块交叉校验 WAV 产物
 ├─ tools\
 │   ├─ build.js              构建：内联为单文件 dist/index.html + 复制 PWA 资源 + 生成 PNG 图标
 │   ├─ github-create-repo.js 维护者工具：用本机 Edge 会话经网页 UI 创建 GitHub 仓库
+│   ├─ github-push.js        维护者工具：Git Data API 推送（历史方案，已被 git push 取代，留档）
 │   └─ github-debug-page.js  维护者工具：浏览器页面结构诊断（选择器调试）
 ├─ test\                   单元测试 + MP3 功能测试 + Python 交叉校验脚本
 ├─ capacitor.config.json   Capacitor 配置（webDir 指向 dist）
@@ -162,7 +163,7 @@ iOS 后台持续录音：Xcode → Signing & Capabilities → Background Modes �
 
 ## 维护者工具
 
-`tools/` 下除构建脚本外，还有两个 GitHub 建库期使用的浏览器自动化工具（依赖 `playwright-core` 与本机 Edge 的已登录会话，cookie 不离开本机）：
+`tools/` 下除构建脚本外，还有三个 GitHub 建库期使用的浏览器自动化工具（依赖 `playwright-core` 与本机 Edge 的已登录会话，cookie 不离开本机）：
 
 ```bash
 npm i -g playwright-core    # 或设 NODE_PATH 指向其安装目录
@@ -172,6 +173,11 @@ node tools/github-create-repo.js
 
 # 诊断：dump 指定页面的表单元素与选择器信息
 node tools/github-debug-page.js https://github.com/new
+
+# 历史方案（留档，勿用于新操作）：经 Git Data API 直接推送全部文件。
+# 实践证明 api.github.com 不接受浏览器会话的跨域 cookie（401），已被上面的
+# 「网页 UI 建库 + git push」组合取代；保留它是为了记录完整的踩坑过程。
+# node tools/github-push.js
 ```
 
 仓库建好后，日常更新就是标准 git 流程：改代码 → `node tools/build.js` → `npm test` → `git commit` → `git push`（凭据由系统 Git Credential Manager 管理）。
