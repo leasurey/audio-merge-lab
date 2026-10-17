@@ -4,6 +4,23 @@
 
 ---
 
+## V0.2.3 — 2026-10-17
+
+兼容性加固（用户反馈 iOS Chrome 问题后继续排查的衍生修复）。
+
+### 🐛 修复
+
+- **PWA 更新失效缺陷**：Service Worker 缓存名原是写死的 `audio-merge-lab-v1`，配合缓存优先策略，发新版后旧缓存永不被清——PWA 用户会一直拿到旧构建（表现为"修复了却没生效"）。现在构建时把 `__CACHE_VERSION__` 替换为 `audio-merge-lab-v<APP_VERSION>`，缓存名随版本变化，activate 自动清旧缓存；导航请求改为**网络优先**（在线必拿最新，断网才回落缓存），双保险
+- **iOS 下拉框聚焦缩放**：触屏设备（`pointer: coarse`）上 `<select>` 字号提到 16px，避免 iOS 聚焦时自动放大页面
+- **`<label>` 按钮渲染对齐**：`.btn` 显式声明 `display: inline-flex`，确保导入按钮改成 label 后在非 flex 容器里也与 button 渲染一致
+
+### 💡 体验
+
+- 解码失败提示针对已知平台缺口给可操作建议：桌面 Chrome 导入 m4a/aac 会明确告知"桌面版 Chrome 不解码 AAC，请用手机/Safari 或先转 MP3/WAV"（不再只给通用报错）
+- 微信内置浏览器（UA 含 MicroMessenger）中录音不支持/权限被拒时，提示点右上角 ⋯ 用默认浏览器打开
+
+---
+
 ## V0.2.2 — 2026-10-17
 
 修复 iOS Chrome 导入无反应的兼容性缺陷（用户实测反馈：iOS 16 + App Store 最新版 Chrome 点「导入」无任何反应，Safari 正常）。

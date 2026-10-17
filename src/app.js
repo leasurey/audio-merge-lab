@@ -321,7 +321,7 @@
       seg.errorMsg = err && err.message ? err.message : String(err);
       renderList();
       setStatus('「' + seg.name + '」解码失败：' + seg.errorMsg +
-        '（该格式可能不被当前浏览器支持，可移除该片段）', true);
+        '（' + decodeFailHint(seg.name) + '）', true);
     }
   }
 
@@ -546,6 +546,34 @@
   }
 
   /* ---------------- 录音 ---------------- */
+  /** 微信内置浏览器检测（UA 含 MicroMessenger） */
+  function isWeChat() {
+    return /MicroMessenger/i.test(navigator.userAgent);
+  }
+
+  /** 微信内的操作引导（内置浏览器对麦克风/文件选择限制较多） */
+  function weChatTip() {
+    return isWeChat()
+      ? '。微信内置浏览器限制较多，请点右上角 ⋯ 选择「用默认浏览器打开」'
+      : '';
+  }
+
+  /**
+   * 解码失败的兼容性提示：只列已知且已核实的平台缺口，不做猜测性断言。
+   * 桌面版 Chrome 因 AAC 专利授权问题不解码 m4a/aac 是确证事实；
+   * 其余情况给通用建议。
+   */
+  function decodeFailHint(name) {
+    var lower = (name || '').toLowerCase();
+    var ua = navigator.userAgent;
+    var isDesktopChrome = /Chrome|Chromium/.test(ua) &&
+      !/Mobile|Android|iPhone|iPad|iPod/.test(ua);
+    if (/\.(m4a|aac|mp4)(\?|#|$)/.test(lower) && isDesktopChrome) {
+      return '桌面版 Chrome 不解码 AAC：请改用手机浏览器 / Safari 打开，或先将该文件转为 MP3 / WAV';
+    }
+    return '该格式可能不被当前浏览器支持，可移除该片段';
+  }
+
   function pickMimeType() {
     if (typeof MediaRecorder === 'undefined') return null;
     var candidates = [
@@ -567,7 +595,7 @@
       return;
     }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setStatus('当前浏览器不支持录音（需要 HTTPS 或 localhost 环境）', true);
+      setStatus('当前浏览器不支持录音（需要 HTTPS 或 localhost 环境）' + weChatTip(), true);
       return;
     }
     if (typeof MediaRecorder === 'undefined') {
@@ -599,7 +627,8 @@
     } catch (err) {
       console.error(err);
       var msg = err && err.name === 'NotAllowedError'
-        ? '麦克风权限被拒绝，请在浏览器设置中允许后重试'
+        ? '麦克风权限被拒绝，请在浏览器设置中允许后重试' +
+          (isWeChat() ? '；或点右上角 ⋯ 用默认浏览器打开' : '')
         : '无法启动录音：' + (err && err.message ? err.message : err);
       setStatus(msg, true);
     }

@@ -4,7 +4,7 @@
  *
  * 1. 将 src/ 下的 CSS/JS（含 vendor/lame.min.js）内联进 index.template.html，
  *    产出单文件 dist/index.html
- * 2. 复制 PWA 资源（manifest、sw.js）到 dist/
+ * 2. 复制 PWA 资源（manifest）到 dist/，sw.js 注入版本化缓存名
  * 3. 用纯 Node（zlib）生成应用图标 PNG 到 dist/icons/
  *
  * 用法：node tools/build.js
@@ -50,7 +50,21 @@ fs.writeFileSync(dist('index.html'), html);
 
 /* ---------------- 2. PWA 资源 ---------------- */
 fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webmanifest'));
-fs.copyFileSync(path.join(root, 'src/sw.js'), dist('sw.js'));
+
+// sw.js 缓存名注入 APP_VERSION：缓存名随版本变化，旧缓存自动清除
+const coreSrc = read('src/audio-core.js');
+const versionMatch = coreSrc.match(/APP_VERSION\s*=\s*'([^']+)'/);
+if (!versionMatch) throw new Error('无法从 src/audio-core.js 解析 APP_VERSION');
+const appVersion = versionMatch[1];
+let swSrc = read('src/sw.js');
+if (!swSrc.includes('__CACHE_VERSION__')) {
+  throw new Error('sw.js 中未找到 __CACHE_VERSION__ 占位符');
+}
+swSrc = swSrc.replaceAll('__CACHE_VERSION__', 'audio-merge-lab-v' + appVersion);
+if (swSrc.includes('__CACHE_VERSION__')) {
+  throw new Error('sw.js 缓存名注入不完整');
+}
+fs.writeFileSync(dist('sw.js'), swSrc);
 
 /* ---------------- 3. 图标生成（纯 Node PNG 编码器） ---------------- */
 function crc32(buf) {
@@ -159,7 +173,7 @@ iconSizes.push(['apple-touch-icon.png', writeIcon('apple-touch-icon.png', 180, {
 
 /* ---------------- 汇总 ---------------- */
 const kb = (n) => (n / 1024).toFixed(1) + ' KB';
-console.log('构建完成:');
+console.log('构建完成 (v' + appVersion + '):');
 console.log('  dist/index.html            ' + kb(Buffer.byteLength(html)));
 console.log('  dist/manifest.webmanifest  ' + kb(fs.statSync(dist('manifest.webmanifest')).size));
 console.log('  dist/sw.js                 ' + kb(fs.statSync(dist('sw.js')).size));

@@ -92,8 +92,14 @@ header.app-header p {
 }
 
 /* ---------- 按钮 ---------- */
+/* display:inline-flex 显式声明：<label>（导入按钮）默认是 inline，
+   不声明的话在非 flex 容器里会塌缩；flex 容器中子元素会被 blockify，
+   两种宿主下都与 <button> 渲染一致 */
 .btn {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   border-radius: 10px;
   padding: 12px 16px;
@@ -333,6 +339,11 @@ select {
   cursor: pointer;
 }
 select:hover { border-color: var(--accent); }
+/* iOS Safari/WKWebView 聚焦字号 <16px 的下拉框会自动放大页面，
+   触屏设备上放大到 16px 防止缩放跳动（桌面指针设备不受影响） */
+@media (pointer: coarse) {
+  select { font-size: 16px; }
+}
 
 /* ---------- 进度条 ---------- */
 #progressWrap { padding: 0 2px 12px; }
