@@ -108,9 +108,12 @@
   <!-- 结果 -->
   <section class="card" id="resultBox" hidden>
     <h2>4. 完成</h2>
-    <audio id="resultAudio" controls preload="metadata"></audio>
+    <!-- 大文件不自动加载：iOS 上在成功瞬间创建 objectURL + 让 audio 载入大 Blob
+         会触发 WebView 内存上限导致页面被系统重载（分享按钮来不及出现） -->
+    <audio id="resultAudio" controls preload="none" hidden></audio>
     <p id="resultMeta"></p>
     <div class="btn-row">
+      <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
       <button class="btn primary" id="btnShare" type="button">分享 / 下载</button>
     </div>
   </section>

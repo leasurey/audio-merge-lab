@@ -540,6 +540,9 @@
     var hint;
     if (state.format === 'wav') {
       hint = 'WAV 无损：约 ' + fmtSize(estimateTargetRate() * 4) + '/秒，兼容性最好，适合存档。';
+      if (isIOSDevice()) {
+        hint += 'iOS 上超大 WAV 可能因内存限制被浏览器重载，长音频建议选 MP3 或分段合并。';
+      }
     } else if (state.format === 'mp3') {
       hint = 'MP3 有损压缩：体积约为 WAV 的 1/10，编码在本地完成，长文件需要几十秒。';
     } else {
@@ -570,6 +573,7 @@
     var a = $('resultAudio');
     try { a.pause(); } catch (e) { /* 忽略 */ }
     a.removeAttribute('src');
+    a.hidden = true;
     if (state.mergedUrl) {
       URL.revokeObjectURL(state.mergedUrl);
       state.mergedUrl = null;
@@ -926,6 +930,9 @@
     function write(bytes) {
       if (sink) return sink.write(bytes);
       parts.push(bytes);
+      // 每 32 块折叠成一个子 Blob：让浏览器把数据挪出 JS 堆（iOS 内存更友好），
+      // 否则长 WAV 会在 JS 堆里堆到最后一次性成 Blob
+      if (parts.length >= 32) parts = [new Blob(parts)];
       return Promise.resolve();
     }
 
@@ -1209,6 +1216,18 @@
       var sink = await openMergeSink(state.format);
       if (sink) await cleanOldOpfsFiles(sink.name);
       var est = estimateMergeBytes();
+      // iOS 专项保护：输出文件过大时提前劝阻（重载发生在合并成功瞬间，事后无法挽回）
+      if (isIOSDevice() && est.out > 200 * 1024 * 1024) {
+        var iosOk = window.confirm(
+          'iOS 浏览器内存有限：本次将生成约 ' + fmtSize(est.out) + ' 的 ' +
+          state.format.toUpperCase() + ' 文件，\n继续可能触发页面重载（表现为"自动刷新"、结果丢失）。\n\n' +
+          '建议改用 MP3（体积约为 1/10），或分段合并。\n\n仍要继续吗？'
+        );
+        if (!iosOk) {
+          setStatus('已取消合并（iOS 内存保护）');
+          return;
+        }
+      }
       if (!sink && est.total > 1200 * 1024 * 1024) {
         // 无流式落盘且估算内存危险：明确警告，让用户选择，而不是 silent crash
         var proceed = window.confirm(
@@ -1245,30 +1264,77 @@
     }
   }
 
+  /** 是否 iOS / iPadOS（含桌面模式） */
+  function isIOSDevice() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
+  /**
+   * 结果的 object URL 按需创建（V0.3.4）。
+   * iOS 上在"合并成功"瞬间创建大 Blob 的 URL 并让 audio 加载，会叠加内存峰值，
+   * 触发 WKWebView 内存上限 → 页面被系统重载（表现为"自动刷新"、分享按钮不出现）。
+   */
+  function ensureResultUrl() {
+    if (!state.mergedBlob) return null;
+    if (!state.mergedUrl) state.mergedUrl = URL.createObjectURL(state.mergedBlob);
+    return state.mergedUrl;
+  }
+
+  function playResult() {
+    var player = $('resultAudio');
+    var url = ensureResultUrl();
+    if (!url) return;
+    if (player.getAttribute('src') !== url) player.src = url;
+    player.hidden = false;
+    var p = player.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function (err) {
+        setStatus('播放失败：' + (err && err.message ? err.message : err), true);
+      });
+    }
+  }
+
   function finishResult(blob, ext, mime, meta) {
     if (state.mergedUrl) URL.revokeObjectURL(state.mergedUrl);
     state.mergedBlob = blob;
-    state.mergedUrl = URL.createObjectURL(blob);
+    state.mergedUrl = null; // 延迟创建：只在用户点「试听」/「分享」时生成
     state.mergedExt = ext;
-    $('resultAudio').src = state.mergedUrl;
+    var player = $('resultAudio');
+    try { player.pause(); } catch (e) { /* 忽略 */ }
+    player.removeAttribute('src');
+    player.hidden = true;
     $('resultMeta').textContent = ext.toUpperCase() +
       (meta.bitrate ? ' · ' + meta.bitrate + ' kbps' : '') +
       ' · ' + Math.round(meta.sampleRate / 1000) + 'kHz' +
       ' · 时长 ' + fmtTime(meta.durationSec) +
       ' · 大小 ' + fmtSize(blob.size);
     $('resultBox').hidden = false;
-    setStatus('合并完成，可试听、分享或下载');
+    var big = blob.size > 60 * 1024 * 1024;
+    setStatus('合并完成，可试听、分享或下载' +
+      (big ? '（文件较大，点「试听」时才加载，避免 iOS 因内存不足重载页面）' : ''));
   }
 
   async function shareOrDownload() {
-    if (!state.mergedUrl) return;
+    var url = ensureResultUrl();
+    if (!url) return;
     var ext = state.mergedExt || 'wav';
     var mime = (state.mergedBlob && state.mergedBlob.type) || 'audio/wav';
     var filename = 'merged-' + nowStamp() + '.' + ext;
+    var size = state.mergedBlob ? state.mergedBlob.size : 0;
+    var isIOS = isIOSDevice();
+
+    // iOS + 大文件：系统分享要把整包读进内存（fetch → File），容易触发重载；
+    // 直接交给系统播放器（流式读取），由用户在播放器里分享/存储
+    if (isIOS && size > 80 * 1024 * 1024) {
+      window.open(url, '_blank');
+      setStatus('文件较大，已交给系统播放器打开（可用播放器的分享 / 存储功能）');
+      return;
+    }
 
     // 优先走系统分享（Android Chrome / iOS 15+ Safari 支持分享文件）
     try {
-      var resp = await fetch(state.mergedUrl);
+      var resp = await fetch(url);
       var blob = await resp.blob();
       var file = new File([blob], filename, { type: mime });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1282,16 +1348,14 @@
 
     // iOS Safari 对 blob URL 的 download 属性支持不可靠，改为新窗口打开，
     // 由系统播放器接管（用户可用其分享/存储功能）
-    var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     if (isIOS) {
-      window.open(state.mergedUrl, '_blank');
+      window.open(url, '_blank');
       setStatus('已在新窗口打开，可通过系统播放器分享或存储');
       return;
     }
 
     var a = document.createElement('a');
-    a.href = state.mergedUrl;
+    a.href = url;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
@@ -1322,6 +1386,7 @@
 
     $('btnRecord').addEventListener('click', toggleRecord);
     $('btnShare').addEventListener('click', shareOrDownload);
+    $('btnPlayResult').addEventListener('click', playResult);
     $('btnCancel').addEventListener('click', cancelMerge);
 
     $('btnMerge').addEventListener('click', function () {
