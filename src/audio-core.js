@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.3.5';
+  var APP_VERSION = '0.4.0';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -197,22 +197,30 @@
   }
 
   /**
-   * 一段源 PCM 在目标采样率下的输出帧数。
+   * 一段源 PCM 在目标采样率下的输出帧数，支持只取源区间 [srcStart, srcEnd)。
    * 与 conformPcm + resampleChannel 的长度计算保持一致；
-   * 空片段返回 0（调用方按"跳过空片段"处理）。
+   * 空片段（或区间为空）返回 0（调用方按"跳过空片段"处理）。
+   *
+   * @param {number} [srcStart] 源起始帧（默认 0）
+   * @param {number} [srcEnd]   源结束帧（默认全长）；越界自动裁剪
    */
-  function conformedFrameCount(srcPcm, targetRate) {
+  function conformedFrameCount(srcPcm, targetRate, srcStart, srcEnd) {
     var srcLen = srcPcm.channels[0].length;
-    if (srcLen === 0) return 0;
-    if (srcPcm.sampleRate === targetRate) return srcLen;
-    return Math.max(1, Math.round(srcLen * (targetRate / srcPcm.sampleRate)));
+    var start = (typeof srcStart === 'number' && srcStart > 0)
+      ? Math.min(Math.floor(srcStart), srcLen) : 0;
+    var end = (typeof srcEnd === 'number' && srcEnd < srcLen)
+      ? Math.max(Math.floor(srcEnd), start) : srcLen;
+    var len = end - start;
+    if (len <= 0) return 0;
+    if (srcPcm.sampleRate === targetRate) return len;
+    return Math.max(1, Math.round(len * (targetRate / srcPcm.sampleRate)));
   }
 
   /**
    * 创建单段转换器：把源 PCM 的任意输出帧区间 [o0, o1) 转换为
    * 目标采样率 / 声道数 / 增益 / 淡变后的采样值。
    *
-   * 无状态设计：输出帧 n 的源位置 = n / ratio（ratio = targetRate/srcRate），
+   * 无状态设计：输出帧 n 的源位置 = (n + srcStart) / ratio（ratio = targetRate/srcRate），
    * 与一次性重采样逐位一致，因此分块调用不产生接缝。
    *
    * @param {Object} srcPcm 源 PCM（只读，绝不修改）
@@ -221,6 +229,8 @@
    *   - targetChannels 目标声道数
    *   - gain           统一增益（归一化用，默认 1）
    *   - fadeMs         首尾淡变毫秒数（默认 0）
+   *   - srcStart       只转换源区间 [srcStart, srcEnd)（默认 0）——片段剪切用，零拷贝
+   *   - srcEnd         源区间结束帧（默认全长）
    *   - int16          true 时输出 Int16（钳位+缩放公式同 floatToInt16）；
    *                    false 时输出 Float32（默认）
    * @returns {{srcRate:number, outFrames:number, convert:Function}}
@@ -235,7 +245,12 @@
     var gain = typeof opts.gain === 'number' ? opts.gain : 1;
     var int16 = !!opts.int16;
     var ratio = targetRate / srcRate;
-    var outFrames = conformedFrameCount(srcPcm, targetRate);
+    // 源区间裁剪（剪切范围）：越界/倒置一律回退为整段
+    var srcStart = (typeof opts.srcStart === 'number' && opts.srcStart > 0)
+      ? Math.min(Math.floor(opts.srcStart), srcLen) : 0;
+    var srcEnd = (typeof opts.srcEnd === 'number' && opts.srcEnd < srcLen)
+      ? Math.max(Math.floor(opts.srcEnd), srcStart) : srcLen;
+    var outFrames = conformedFrameCount(srcPcm, targetRate, srcStart, srcEnd);
     var fadeLen = Math.min(
       Math.floor((opts.fadeMs / 1000) * targetRate),
       Math.floor(outFrames / 2)
@@ -254,10 +269,12 @@
       var n, c, abs, pos, i0, t, v, g, ch;
       for (n = 0; n < frames; n++) {
         abs = o0 + n;
-        pos = abs / ratio;
+        // 源位置 = 剪切起点 + 输出帧按比例映射。注意顺序：先按比例再平移。
+        // 若写成 (abs + srcStart) / ratio，等于把剪切起点也缩放，跨采样率时会错位。
+        pos = srcStart + abs / ratio;
         i0 = Math.floor(pos);
-        var hold = i0 >= srcLen - 1;
-        if (hold) i0 = srcLen - 1;
+        var hold = i0 >= srcEnd - 1;
+        if (hold) i0 = srcEnd - 1;
         t = hold ? 0 : pos - i0;
         for (c = 0; c < src.length; c++) {
           ch = src[c];
@@ -290,18 +307,20 @@
   }
 
   /**
-   * 单段在淡变后的峰值（不含归一化增益）。
+   * 单段在淡变后的峰值（不含归一化增益），支持只统计源区间 [srcStart, srcEnd)。
    *
    * 流式合并时用于预先计算全局增益：旧实现是"先拼接再 peakNormalize"，
    * 而拼接后的全局峰值 = 各段淡变后峰值的最大者（静音间隔不贡献峰值），
    * 因此两路径等值——这里用只读扫描完成，不分配任何大数组。
    */
-  function segmentPeakAfterFade(srcPcm, targetRate, targetChannels, fadeMs) {
+  function segmentPeakAfterFade(srcPcm, targetRate, targetChannels, fadeMs, srcStart, srcEnd) {
     var src = srcPcm.channels;
     var srcLen = src[0].length;
     if (srcLen === 0) return 0;
+    var s0 = (typeof srcStart === 'number' && srcStart > 0) ? Math.min(Math.floor(srcStart), srcLen) : 0;
+    var s1 = (typeof srcEnd === 'number' && srcEnd < srcLen) ? Math.max(Math.floor(srcEnd), s0) : srcLen;
     var ratio = targetRate / srcPcm.sampleRate;
-    var outFrames = conformedFrameCount(srcPcm, targetRate);
+    var outFrames = conformedFrameCount(srcPcm, targetRate, s0, s1);
     var fadeLen = Math.min(
       Math.floor((fadeMs / 1000) * targetRate),
       Math.floor(outFrames / 2)
@@ -314,10 +333,11 @@
         if (n < fadeLen) g = n / fadeLen;
         else if (n >= outFrames - fadeLen) g = (outFrames - 1 - n) / fadeLen;
       }
-      pos = n / ratio;
+      // 同 createSegmentConverter：先按比例映射，再加剪切起点平移
+      pos = s0 + n / ratio;
       i0 = Math.floor(pos);
-      var hold = i0 >= srcLen - 1;
-      if (hold) i0 = srcLen - 1;
+      var hold = i0 >= s1 - 1;
+      if (hold) i0 = s1 - 1;
       t = hold ? 0 : pos - i0;
       for (c = 0; c < src.length; c++) {
         ch = src[c];
@@ -339,8 +359,10 @@
   /**
    * 合并计划：各非空片段的输出帧数、间隔帧数、总帧数。
    * 与 concatSegments 的长度语义一致（跳过空片段、段间插间隔）。
+   * 每个片段可带 trimStart / trimEnd（源帧）实现剪切——零拷贝，
+   * 由转换器按源区间读取，不生成裁剪副本。
    * @returns {{targetSampleRate, targetChannels, gapFrames,
-   *            parts:Array<{index:number, outFrames:number}>, totalFrames}}
+   *            parts:Array<{index:number, outFrames:number, trimStart:number, trimEnd:number}>, totalFrames}}
    */
   function planMerge(segments, options) {
     var opts = mergeOptions(options);
@@ -354,9 +376,17 @@
       if (!seg || !seg.pcm || !seg.pcm.channels || seg.pcm.channels.length === 0) {
         throw new Error('planMerge: 第 ' + (i + 1) + ' 个片段数据无效');
       }
-      var frames = conformedFrameCount(seg.pcm, opts.targetSampleRate);
+      var srcLen = seg.pcm.channels[0].length;
+      var trimStart = (typeof seg.trimStart === 'number' && seg.trimStart > 0)
+        ? Math.min(Math.floor(seg.trimStart), srcLen) : 0;
+      var trimEnd = (typeof seg.trimEnd === 'number' && seg.trimEnd < srcLen)
+        ? Math.max(Math.floor(seg.trimEnd), trimStart) : srcLen;
+      var frames = conformedFrameCount(seg.pcm, opts.targetSampleRate, trimStart, trimEnd);
       if (frames === 0) continue; // 跳过空片段（与 concatSegments 一致）
-      parts.push({ index: i, outFrames: frames });
+      parts.push({
+        index: i, outFrames: frames,
+        trimStart: trimStart, trimEnd: trimEnd
+      });
     }
     if (parts.length === 0) {
       throw new Error('planMerge: 所有片段均为空');
@@ -402,7 +432,8 @@
       for (i = 0; i < plan.parts.length; i++) {
         var pk = segmentPeakAfterFade(
           segments[plan.parts[i].index].pcm,
-          plan.targetSampleRate, plan.targetChannels, opts.fadeMs
+          plan.targetSampleRate, plan.targetChannels, opts.fadeMs,
+          plan.parts[i].trimStart, plan.parts[i].trimEnd
         );
         if (pk > peak) peak = pk;
       }
@@ -420,6 +451,8 @@
         targetChannels: plan.targetChannels,
         gain: gain,
         fadeMs: opts.fadeMs,
+        srcStart: part.trimStart,
+        srcEnd: part.trimEnd,
         int16: false
       });
       var done = 0;

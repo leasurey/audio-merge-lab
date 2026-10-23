@@ -623,4 +623,107 @@ test('decodeWav: PCM(1) / IEEE float(3) / 可扩展格式的 PCM 子格式仍可
     /不支持该压缩格式/);
 });
 
+/* ---------- 片段剪切（源帧区间，零拷贝） ---------- */
+
+function mkTrimPcm(frames, rate, chs) {
+  const channels = [];
+  for (let c = 0; c < chs; c++) {
+    const a = new Float32Array(frames);
+    for (let i = 0; i < frames; i++) a[i] = Math.sin((i + c * 100) / 25) * 0.6;
+    channels.push(a);
+  }
+  return { sampleRate: rate, channels };
+}
+
+/** 手动切片参考实现：裁出子区间后按原路径转换 */
+function slicePcmRef(pcm, start, end) {
+  const channels = pcm.channels.map(ch => ch.slice(start, end));
+  return { sampleRate: pcm.sampleRate, channels };
+}
+
+test('conformedFrameCount: 源帧区间裁剪（越界/倒置安全）', () => {
+  const pcm = mkTrimPcm(10000, 44100, 2);
+  assert.strictEqual(Core.conformedFrameCount(pcm, 44100, 1000, 4000), 3000);
+  assert.strictEqual(Core.conformedFrameCount(pcm, 22050, 1000, 4000), 1500); // 比例一致
+  assert.strictEqual(Core.conformedFrameCount(pcm, 44100, 0, 10000), 10000);  // 显式全量
+  assert.strictEqual(Core.conformedFrameCount(pcm, 44100, 9000, 99999), 1000); // 越界裁剪
+  assert.strictEqual(Core.conformedFrameCount(pcm, 44100, 4000, 1000), 0);    // 倒置 → 空
+  assert.strictEqual(Core.conformedFrameCount(pcm, 44100, 20000, 30000), 0);  // 完全越界 → 空
+});
+
+test('createSegmentConverter: 剪切区间与"先切片再转换"逐位一致', () => {
+  const pcm = mkTrimPcm(9973, 44100, 2); // 故意用非对齐长度
+  const start = 1234, end = 8765;
+  const convTrim = Core.createSegmentConverter(pcm, {
+    targetRate: 44100, targetChannels: 2, fadeMs: 8, srcStart: start, srcEnd: end
+  });
+  const ref = Core.createSegmentConverter(slicePcmRef(pcm, start, end), {
+    targetRate: 44100, targetChannels: 2, fadeMs: 8
+  });
+  assert.strictEqual(convTrim.outFrames, ref.outFrames);
+  assert.strictEqual(convTrim.outFrames, end - start);
+
+  const a = [], b = [];
+  for (let c = 0; c < 2; c++) {
+    a.push(new Float32Array(convTrim.outFrames));
+    b.push(new Float32Array(ref.outFrames));
+  }
+  convTrim.convert(0, convTrim.outFrames, a);
+  ref.convert(0, ref.outFrames, b);
+  for (let c = 0; c < 2; c++) {
+    for (let i = 0; i < a[c].length; i++) {
+      assert.ok(Math.abs(a[c][i] - b[c][i]) < 1e-6, `c${c} i${i}: ${a[c][i]} vs ${b[c][i]}`);
+    }
+  }
+});
+
+test('createSegmentConverter: 剪切 + 重采样与先切片再重采样一致', () => {
+  const pcm = mkTrimPcm(9973, 48000, 2);
+  const start = 500, end = 9500;
+  const conv = Core.createSegmentConverter(pcm, {
+    targetRate: 44100, targetChannels: 2, fadeMs: 0, srcStart: start, srcEnd: end
+  });
+  const ref = Core.createSegmentConverter(slicePcmRef(pcm, start, end), {
+    targetRate: 44100, targetChannels: 2, fadeMs: 0
+  });
+  assert.strictEqual(conv.outFrames, ref.outFrames);
+  const a = new Float32Array(conv.outFrames), b = new Float32Array(ref.outFrames);
+  conv.convert(0, conv.outFrames, [a, a.slice()]);
+  ref.convert(0, ref.outFrames, [b, b.slice()]);
+  for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-6);
+});
+
+test('planMerge / concatSegments: trim 参数端到端一致', () => {
+  const segA = { name: 'a', pcm: mkTrimPcm(8000, 44100, 2) };
+  const segB = { name: 'b', pcm: mkTrimPcm(6000, 44100, 2) };
+  const plan = Core.planMerge([
+    Object.assign({ trimStart: 1000, trimEnd: 5000 }, segA),
+    Object.assign({ trimStart: 0, trimEnd: 3000 }, segB)
+  ], { targetSampleRate: 44100, targetChannels: 2, gapSec: 0.5, fadeMs: 0 });
+  assert.strictEqual(plan.totalFrames, 4000 + 3000 + Math.round(0.5 * 44100));
+  assert.deepStrictEqual(plan.parts.map(p => [p.trimStart, p.trimEnd]), [[1000, 5000], [0, 3000]]);
+
+  // 与"手动切片后合并"完全一致
+  const withTrim = Core.concatSegments([
+    Object.assign({ trimStart: 1000, trimEnd: 5000 }, segA),
+    Object.assign({ trimStart: 0, trimEnd: 3000 }, segB)
+  ], { targetSampleRate: 44100, targetChannels: 2, gapSec: 0.5, fadeMs: 0 });
+  const manual = Core.concatSegments([
+    { name: 'a', pcm: slicePcmRef(segA.pcm, 1000, 5000) },
+    { name: 'b', pcm: slicePcmRef(segB.pcm, 0, 3000) }
+  ], { targetSampleRate: 44100, targetChannels: 2, gapSec: 0.5, fadeMs: 0 });
+  assert.strictEqual(withTrim.channels[0].length, manual.channels[0].length);
+  for (let i = 0; i < withTrim.channels[0].length; i++) {
+    assert.ok(Math.abs(withTrim.channels[0][i] - manual.channels[0][i]) < 1e-6, 'i=' + i);
+    assert.ok(Math.abs(withTrim.channels[1][i] - manual.channels[1][i]) < 1e-6, 'i=' + i);
+  }
+});
+
+test('planMerge: 全空剪切区间抛错（与全空片段一致）', () => {
+  const pcm = mkTrimPcm(4000, 44100, 2);
+  assert.throws(() => Core.planMerge(
+    [{ name: 'x', pcm, trimStart: 1000, trimEnd: 500 }], {}),
+    /所有片段均为空/);
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

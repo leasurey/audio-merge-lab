@@ -34,8 +34,8 @@
     <div class="btn-row">
       <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
            不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
-      <label class="btn primary" id="btnImport" for="fileInput">导入音频文件</label>
-      <button class="btn ghost" id="btnRecord" type="button">开始录音</button>
+      <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
+      <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
     </div>
     <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
     <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
@@ -64,12 +64,12 @@
     <div class="opt-row">
       <label>输出格式</label>
       <div class="seg-control" id="formatGroup">
-        <button type="button" class="seg-btn active" data-fmt="wav">WAV</button>
-        <button type="button" class="seg-btn" data-fmt="mp3">MP3</button>
+        <button type="button" class="seg-btn" data-fmt="wav">WAV</button>
+        <button type="button" class="seg-btn active" data-fmt="mp3">MP3</button>
         <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
       </div>
     </div>
-    <div class="opt-row" id="bitrateRow" hidden>
+    <div class="opt-row" id="bitrateRow">
       <label for="bitrateSel">MP3 位率</label>
       <select id="bitrateSel">
         <option value="96">96 kbps</option>
@@ -114,14 +114,14 @@
     <p id="resultMeta"></p>
     <div class="btn-row">
       <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
-      <button class="btn primary" id="btnShare" type="button">分享 / 下载</button>
+      <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
     </div>
   </section>
 
   <div class="action-bar" id="actionBar" hidden>
     <div class="action-inner">
       <span class="action-summary" id="actionSummary"></span>
-      <button class="btn primary" id="btnMerge" type="button">合并</button>
+      <button class="btn primary btn-lg btn-merge" id="btnMerge" type="button">合并</button>
     </div>
   </div>
 

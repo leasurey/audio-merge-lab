@@ -46,8 +46,10 @@ header.app-header {
 }
 header.app-header h1 {
   margin: 0;
-  font-size: 21px;
+  font-size: 22px;
   letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
 }
 header.app-header h1 .dot {
   display: inline-block;
@@ -56,12 +58,13 @@ header.app-header h1 .dot {
   border-radius: 50%;
   background: var(--accent);
   margin-right: 8px;
-  vertical-align: 1px;
+  flex-shrink: 0;
 }
 header.app-header p {
   margin: 6px 0 0;
   color: var(--text-dim);
   font-size: 13px;
+  line-height: 1.6;
 }
 header.app-header .header-links { margin-top: 8px; }
 header.app-header .header-links a {
@@ -76,26 +79,29 @@ header.app-header .header-links a:hover { text-decoration: underline; }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 14px;
-  margin-bottom: 14px;
+  padding: 16px;
+  margin-bottom: 16px;
 }
 .card h2 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 15px;
   color: var(--text);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
 .card h2 .count {
   font-size: 12px;
   color: var(--text-dim);
   font-weight: normal;
+  font-variant-numeric: tabular-nums;
 }
 .hint {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--text-dim);
+  line-height: 1.6;
 }
 
 /* ---------- 按钮 ---------- */
@@ -108,12 +114,12 @@ header.app-header .header-links a:hover { text-decoration: underline; }
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 10px;
-  padding: 12px 16px;
+  border-radius: 12px;
+  padding: 12px 18px;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.05s ease, background 0.15s ease;
+  transition: transform 0.05s ease, background 0.15s ease, box-shadow 0.15s ease;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
@@ -138,9 +144,26 @@ header.app-header .header-links a:hover { text-decoration: underline; }
 .btn.danger:hover { background: #c9463f; }
 .btn.tiny { padding: 6px 12px; font-size: 13px; }
 
+/* 大号按钮：导入 / 录音 / 合并 / 分享——主操作统一放大，点击区 ≥48px */
+.btn-lg {
+  padding: 15px 22px;
+  font-size: 16px;
+  border-radius: 14px;
+  min-height: 50px;
+}
+/* 合并按钮：底部固定栏里的唯一主操作，加强视觉权重 */
+.btn-merge {
+  min-width: 148px;
+  box-shadow: 0 4px 18px rgba(79, 140, 255, 0.35);
+  letter-spacing: 0.5px;
+}
+.btn-merge:active { box-shadow: 0 2px 8px rgba(79, 140, 255, 0.3); }
+#btnImport { letter-spacing: 0.5px; }
+#btnShare { flex: 1; }
+
 .btn-row {
   display: flex;
-  gap: 10px;
+  gap: 12px;
 }
 .btn-row .btn { flex: 1; }
 
@@ -208,25 +231,32 @@ ul.seg-list li.empty {
 li.seg {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 8px;
+  gap: 12px;
+  padding: 10px 6px;
   border-bottom: 1px solid var(--border);
 }
 li.seg:last-child { border-bottom: none; }
-.seg-idx {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--card-2);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 12px;
+/* 拖动把手：替代原上下箭头，按住拖动调整顺序（pointer events） */
+.seg-drag {
+  width: 26px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--text-dim);
+  font-size: 16px;
+  letter-spacing: -2px;
+  cursor: grab;
   flex-shrink: 0;
+  touch-action: none; /* 交给自己处理手势，避免触发页面滚动 */
+  border-radius: 8px;
+  -webkit-tap-highlight-color: transparent;
 }
-.seg-info { flex: 1; min-width: 0; }
+.seg-drag:hover { color: var(--text); background: var(--card-2); }
+.seg-drag:active { cursor: grabbing; }
+li.seg.dragging { opacity: 0.55; }
+li.seg.dragging .seg-drag { color: var(--accent); }
+.seg-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .seg-name {
   font-size: 14px;
   white-space: nowrap;
@@ -249,11 +279,12 @@ li.seg:last-child { border-bottom: none; }
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  align-items: center;
 }
 .icon-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
   border: 1px solid var(--border);
   background: var(--card-2);
   color: var(--text-dim);
@@ -267,19 +298,62 @@ li.seg:last-child { border-bottom: none; }
 .icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 .icon-btn:disabled { opacity: 0.3; cursor: default; }
 .icon-btn.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.icon-btn.active { color: var(--accent); border-color: var(--accent); }
+
+/* ---------- 片段剪切面板 ---------- */
+.trim-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trim-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.trim-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  width: 28px;
+  flex-shrink: 0;
+}
+.trim-range { flex: 1.4; accent-color: var(--accent); height: 26px; min-width: 0; }
+.trim-num {
+  width: 68px;
+  flex-shrink: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  font-variant-numeric: tabular-nums;
+}
+.trim-num:focus { border-color: var(--accent); outline: none; }
+.trim-times {
+  font-size: 12px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.trim-ops { display: flex; gap: 8px; }
 
 /* ---------- 选项 ---------- */
 .opt-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 0;
+  padding: 9px 0;
 }
 .opt-row label { flex: 1; font-size: 14px; }
 .opt-row output {
   font-size: 13px;
   color: var(--accent);
-  min-width: 48px;
+  min-width: 52px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -447,5 +521,11 @@ li.seg.failed .seg-meta { color: var(--danger); }
 .action-bar .btn { flex: 0 0 auto; min-width: 108px; }
 
 @media (min-width: 560px) {
-  .btn-row .btn { flex: 0 0 auto; min-width: 160px; }
+  .btn-row .btn { flex: 0 0 auto; min-width: 180px; }
+}
+
+/* 小屏兜底：剪切面板的数字输入框换行时不挤压滑杆 */
+@media (max-width: 400px) {
+  .trim-num { width: 58px; }
+  .action-summary { font-size: 12px; }
 }
