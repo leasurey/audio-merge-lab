@@ -3,11 +3,11 @@
  * 单文件应用，缓存清单极小。
  *
  * 缓存名由 tools/build.js 在构建时按 APP_VERSION 注入（源码中为占位符，
- * 构建后形如 audio-merge-lab-v0.3.5）——缓存名随版本变化，activate 时
+ * 构建后形如 audio-merge-lab-v<版本号>）——缓存名随版本变化，activate 时
  * 自动删除旧版本缓存，保证 PWA 用户能收到新构建（修复"发了新版却
  * 一直拿到旧文件"的问题）。
  */
-var CACHE = 'audio-merge-lab-v0.3.5';
+var CACHE = 'audio-merge-lab-v0.4.1';
 var ASSETS = [
   './',
   './index.html',
@@ -39,6 +39,12 @@ self.addEventListener('activate', function (e) {
 });
 
 self.addEventListener('fetch', function (e) {
+  // 下载服务的接口必须直连网络：
+  // 1) Cache.match() 只接受 GET，POST /api/upload 会被它 reject 掉（上传直接失败）；
+  // 2) 动态生成的下载链接也不该被离线缓存命中旧内容。
+  // 因此凡 /api/ 开头的请求一律不拦截，交给浏览器走真实网络。
+  if (e.request.url.indexOf('/api/') !== -1) return;
+
   // 导航请求（页面本身）网络优先：在线时永远拿最新构建，失败才回退缓存；
   // 静态资源缓存优先：图标等不常变，离线可用。音频文件由 Blob 处理，不入缓存。
   if (e.request.mode === 'navigate') {

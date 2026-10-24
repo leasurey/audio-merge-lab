@@ -174,8 +174,10 @@ header.app-header {
 }
 header.app-header h1 {
   margin: 0;
-  font-size: 21px;
+  font-size: 22px;
   letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
 }
 header.app-header h1 .dot {
   display: inline-block;
@@ -184,12 +186,13 @@ header.app-header h1 .dot {
   border-radius: 50%;
   background: var(--accent);
   margin-right: 8px;
-  vertical-align: 1px;
+  flex-shrink: 0;
 }
 header.app-header p {
   margin: 6px 0 0;
   color: var(--text-dim);
   font-size: 13px;
+  line-height: 1.6;
 }
 header.app-header .header-links { margin-top: 8px; }
 header.app-header .header-links a {
@@ -204,26 +207,29 @@ header.app-header .header-links a:hover { text-decoration: underline; }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 14px;
-  margin-bottom: 14px;
+  padding: 16px;
+  margin-bottom: 16px;
 }
 .card h2 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 15px;
   color: var(--text);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
 .card h2 .count {
   font-size: 12px;
   color: var(--text-dim);
   font-weight: normal;
+  font-variant-numeric: tabular-nums;
 }
 .hint {
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--text-dim);
+  line-height: 1.6;
 }
 
 /* ---------- 按钮 ---------- */
@@ -236,12 +242,12 @@ header.app-header .header-links a:hover { text-decoration: underline; }
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 10px;
-  padding: 12px 16px;
+  border-radius: 12px;
+  padding: 12px 18px;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.05s ease, background 0.15s ease;
+  transition: transform 0.05s ease, background 0.15s ease, box-shadow 0.15s ease;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
@@ -266,9 +272,38 @@ header.app-header .header-links a:hover { text-decoration: underline; }
 .btn.danger:hover { background: #c9463f; }
 .btn.tiny { padding: 6px 12px; font-size: 13px; }
 
+/* 大号按钮：导入 / 录音 / 合并 / 分享——主操作统一放大，点击区 ≥48px */
+.btn-lg {
+  padding: 15px 22px;
+  font-size: 16px;
+  border-radius: 14px;
+  min-height: 50px;
+}
+/* 合并按钮：底部固定栏里的唯一主操作，加强视觉权重 */
+.btn-merge {
+  min-width: 148px;
+  box-shadow: 0 4px 18px rgba(79, 140, 255, 0.35);
+  letter-spacing: 0.5px;
+}
+.btn-merge:active { box-shadow: 0 2px 8px rgba(79, 140, 255, 0.3); }
+#btnImport { letter-spacing: 0.5px; }
+#btnShare { flex: 1; }
+
+/* 保存区：<a> 作为按钮使用，去掉下划线；链接生成后整行铺满便于点击 */
+#saveBox { margin-top: 12px; }
+a.btn { text-decoration: none; }
+#saveLink {
+  display: flex;
+  width: 100%;
+  margin-top: 10px;
+  box-sizing: border-box;
+  text-align: center;
+}
+#saveLink[hidden] { display: none; }
+
 .btn-row {
   display: flex;
-  gap: 10px;
+  gap: 12px;
 }
 .btn-row .btn { flex: 1; }
 
@@ -336,25 +371,32 @@ ul.seg-list li.empty {
 li.seg {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 8px;
+  gap: 12px;
+  padding: 10px 6px;
   border-bottom: 1px solid var(--border);
 }
 li.seg:last-child { border-bottom: none; }
-.seg-idx {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--card-2);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 12px;
+/* 拖动把手：替代原上下箭头，按住拖动调整顺序（pointer events） */
+.seg-drag {
+  width: 26px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--text-dim);
+  font-size: 16px;
+  letter-spacing: -2px;
+  cursor: grab;
   flex-shrink: 0;
+  touch-action: none; /* 交给自己处理手势，避免触发页面滚动 */
+  border-radius: 8px;
+  -webkit-tap-highlight-color: transparent;
 }
-.seg-info { flex: 1; min-width: 0; }
+.seg-drag:hover { color: var(--text); background: var(--card-2); }
+.seg-drag:active { cursor: grabbing; }
+li.seg.dragging { opacity: 0.55; }
+li.seg.dragging .seg-drag { color: var(--accent); }
+.seg-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .seg-name {
   font-size: 14px;
   white-space: nowrap;
@@ -377,11 +419,12 @@ li.seg:last-child { border-bottom: none; }
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  align-items: center;
 }
 .icon-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
   border: 1px solid var(--border);
   background: var(--card-2);
   color: var(--text-dim);
@@ -395,19 +438,62 @@ li.seg:last-child { border-bottom: none; }
 .icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 .icon-btn:disabled { opacity: 0.3; cursor: default; }
 .icon-btn.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.icon-btn.active { color: var(--accent); border-color: var(--accent); }
+
+/* ---------- 片段剪切面板 ---------- */
+.trim-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trim-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.trim-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  width: 28px;
+  flex-shrink: 0;
+}
+.trim-range { flex: 1.4; accent-color: var(--accent); height: 26px; min-width: 0; }
+.trim-num {
+  width: 68px;
+  flex-shrink: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  font-variant-numeric: tabular-nums;
+}
+.trim-num:focus { border-color: var(--accent); outline: none; }
+.trim-times {
+  font-size: 12px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.trim-ops { display: flex; gap: 8px; }
 
 /* ---------- 选项 ---------- */
 .opt-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 0;
+  padding: 9px 0;
 }
 .opt-row label { flex: 1; font-size: 14px; }
 .opt-row output {
   font-size: 13px;
   color: var(--accent);
-  min-width: 48px;
+  min-width: 52px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -575,7 +661,13 @@ li.seg.failed .seg-meta { color: var(--danger); }
 .action-bar .btn { flex: 0 0 auto; min-width: 108px; }
 
 @media (min-width: 560px) {
-  .btn-row .btn { flex: 0 0 auto; min-width: 160px; }
+  .btn-row .btn { flex: 0 0 auto; min-width: 180px; }
+}
+
+/* 小屏兜底：剪切面板的数字输入框换行时不挤压滑杆 */
+@media (max-width: 400px) {
+  .trim-num { width: 58px; }
+  .action-summary { font-size: 12px; }
 }
 
 </style>
@@ -595,8 +687,8 @@ li.seg.failed .seg-meta { color: var(--danger); }
     <div class="btn-row">
       <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
            不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
-      <label class="btn primary" id="btnImport" for="fileInput">导入音频文件</label>
-      <button class="btn ghost" id="btnRecord" type="button">开始录音</button>
+      <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
+      <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
     </div>
     <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
     <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
@@ -625,12 +717,12 @@ li.seg.failed .seg-meta { color: var(--danger); }
     <div class="opt-row">
       <label>输出格式</label>
       <div class="seg-control" id="formatGroup">
-        <button type="button" class="seg-btn active" data-fmt="wav">WAV</button>
-        <button type="button" class="seg-btn" data-fmt="mp3">MP3</button>
+        <button type="button" class="seg-btn" data-fmt="wav">WAV</button>
+        <button type="button" class="seg-btn active" data-fmt="mp3">MP3</button>
         <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
       </div>
     </div>
-    <div class="opt-row" id="bitrateRow" hidden>
+    <div class="opt-row" id="bitrateRow">
       <label for="bitrateSel">MP3 位率</label>
       <select id="bitrateSel">
         <option value="96">96 kbps</option>
@@ -675,20 +767,29 @@ li.seg.failed .seg-meta { color: var(--danger); }
     <p id="resultMeta"></p>
     <div class="btn-row">
       <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
-      <button class="btn primary" id="btnShare" type="button">分享 / 下载</button>
+      <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
+    </div>
+    <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
+         iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
+    <div id="saveBox" hidden>
+      <div class="btn-row">
+        <button class="btn ghost btn-lg" id="btnSaveFile" type="button">💾 生成保存链接</button>
+      </div>
+      <a class="btn primary btn-lg save-link" id="saveLink" href="#" target="_blank" rel="noopener" hidden>💾 点此保存（存到「文件」App）</a>
+      <p class="hint" id="saveHint"></p>
     </div>
   </section>
 
   <div class="action-bar" id="actionBar" hidden>
     <div class="action-inner">
       <span class="action-summary" id="actionSummary"></span>
-      <button class="btn primary" id="btnMerge" type="button">合并</button>
+      <button class="btn primary btn-lg btn-merge" id="btnMerge" type="button">合并</button>
     </div>
   </div>
 
   <footer id="appFooter">
     <span class="footer-line">Audio Merge Lab <span id="appVersion"></span> · 纯前端实现 · 数据不离开你的设备</span>
-    <span class="footer-line footer-author">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a> · <a href="guide.html">使用指南</a> · <a href="convert.html">格式转换</a> · <a href="compat.html">兼容性自检</a></span>
+    <span class="footer-line footer-author">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a> · <a href="https://github.com/leasurey/audio-merge-lab" target="_blank" rel="noopener noreferrer">GitHub 项目</a> · <a href="guide.html">使用指南</a> · <a href="convert.html">格式转换</a> · <a href="compat.html">兼容性自检</a></span>
   </footer>
 </div>
 
@@ -1035,7 +1136,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.3.5';
+  var APP_VERSION = '0.4.1';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -1205,22 +1306,30 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   /**
-   * 一段源 PCM 在目标采样率下的输出帧数。
+   * 一段源 PCM 在目标采样率下的输出帧数，支持只取源区间 [srcStart, srcEnd)。
    * 与 conformPcm + resampleChannel 的长度计算保持一致；
-   * 空片段返回 0（调用方按"跳过空片段"处理）。
+   * 空片段（或区间为空）返回 0（调用方按"跳过空片段"处理）。
+   *
+   * @param {number} [srcStart] 源起始帧（默认 0）
+   * @param {number} [srcEnd]   源结束帧（默认全长）；越界自动裁剪
    */
-  function conformedFrameCount(srcPcm, targetRate) {
+  function conformedFrameCount(srcPcm, targetRate, srcStart, srcEnd) {
     var srcLen = srcPcm.channels[0].length;
-    if (srcLen === 0) return 0;
-    if (srcPcm.sampleRate === targetRate) return srcLen;
-    return Math.max(1, Math.round(srcLen * (targetRate / srcPcm.sampleRate)));
+    var start = (typeof srcStart === 'number' && srcStart > 0)
+      ? Math.min(Math.floor(srcStart), srcLen) : 0;
+    var end = (typeof srcEnd === 'number' && srcEnd < srcLen)
+      ? Math.max(Math.floor(srcEnd), start) : srcLen;
+    var len = end - start;
+    if (len <= 0) return 0;
+    if (srcPcm.sampleRate === targetRate) return len;
+    return Math.max(1, Math.round(len * (targetRate / srcPcm.sampleRate)));
   }
 
   /**
    * 创建单段转换器：把源 PCM 的任意输出帧区间 [o0, o1) 转换为
    * 目标采样率 / 声道数 / 增益 / 淡变后的采样值。
    *
-   * 无状态设计：输出帧 n 的源位置 = n / ratio（ratio = targetRate/srcRate），
+   * 无状态设计：输出帧 n 的源位置 = (n + srcStart) / ratio（ratio = targetRate/srcRate），
    * 与一次性重采样逐位一致，因此分块调用不产生接缝。
    *
    * @param {Object} srcPcm 源 PCM（只读，绝不修改）
@@ -1229,6 +1338,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    *   - targetChannels 目标声道数
    *   - gain           统一增益（归一化用，默认 1）
    *   - fadeMs         首尾淡变毫秒数（默认 0）
+   *   - srcStart       只转换源区间 [srcStart, srcEnd)（默认 0）——片段剪切用，零拷贝
+   *   - srcEnd         源区间结束帧（默认全长）
    *   - int16          true 时输出 Int16（钳位+缩放公式同 floatToInt16）；
    *                    false 时输出 Float32（默认）
    * @returns {{srcRate:number, outFrames:number, convert:Function}}
@@ -1243,7 +1354,12 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var gain = typeof opts.gain === 'number' ? opts.gain : 1;
     var int16 = !!opts.int16;
     var ratio = targetRate / srcRate;
-    var outFrames = conformedFrameCount(srcPcm, targetRate);
+    // 源区间裁剪（剪切范围）：越界/倒置一律回退为整段
+    var srcStart = (typeof opts.srcStart === 'number' && opts.srcStart > 0)
+      ? Math.min(Math.floor(opts.srcStart), srcLen) : 0;
+    var srcEnd = (typeof opts.srcEnd === 'number' && opts.srcEnd < srcLen)
+      ? Math.max(Math.floor(opts.srcEnd), srcStart) : srcLen;
+    var outFrames = conformedFrameCount(srcPcm, targetRate, srcStart, srcEnd);
     var fadeLen = Math.min(
       Math.floor((opts.fadeMs / 1000) * targetRate),
       Math.floor(outFrames / 2)
@@ -1262,10 +1378,12 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       var n, c, abs, pos, i0, t, v, g, ch;
       for (n = 0; n < frames; n++) {
         abs = o0 + n;
-        pos = abs / ratio;
+        // 源位置 = 剪切起点 + 输出帧按比例映射。注意顺序：先按比例再平移。
+        // 若写成 (abs + srcStart) / ratio，等于把剪切起点也缩放，跨采样率时会错位。
+        pos = srcStart + abs / ratio;
         i0 = Math.floor(pos);
-        var hold = i0 >= srcLen - 1;
-        if (hold) i0 = srcLen - 1;
+        var hold = i0 >= srcEnd - 1;
+        if (hold) i0 = srcEnd - 1;
         t = hold ? 0 : pos - i0;
         for (c = 0; c < src.length; c++) {
           ch = src[c];
@@ -1298,18 +1416,20 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   /**
-   * 单段在淡变后的峰值（不含归一化增益）。
+   * 单段在淡变后的峰值（不含归一化增益），支持只统计源区间 [srcStart, srcEnd)。
    *
    * 流式合并时用于预先计算全局增益：旧实现是"先拼接再 peakNormalize"，
    * 而拼接后的全局峰值 = 各段淡变后峰值的最大者（静音间隔不贡献峰值），
    * 因此两路径等值——这里用只读扫描完成，不分配任何大数组。
    */
-  function segmentPeakAfterFade(srcPcm, targetRate, targetChannels, fadeMs) {
+  function segmentPeakAfterFade(srcPcm, targetRate, targetChannels, fadeMs, srcStart, srcEnd) {
     var src = srcPcm.channels;
     var srcLen = src[0].length;
     if (srcLen === 0) return 0;
+    var s0 = (typeof srcStart === 'number' && srcStart > 0) ? Math.min(Math.floor(srcStart), srcLen) : 0;
+    var s1 = (typeof srcEnd === 'number' && srcEnd < srcLen) ? Math.max(Math.floor(srcEnd), s0) : srcLen;
     var ratio = targetRate / srcPcm.sampleRate;
-    var outFrames = conformedFrameCount(srcPcm, targetRate);
+    var outFrames = conformedFrameCount(srcPcm, targetRate, s0, s1);
     var fadeLen = Math.min(
       Math.floor((fadeMs / 1000) * targetRate),
       Math.floor(outFrames / 2)
@@ -1322,10 +1442,11 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         if (n < fadeLen) g = n / fadeLen;
         else if (n >= outFrames - fadeLen) g = (outFrames - 1 - n) / fadeLen;
       }
-      pos = n / ratio;
+      // 同 createSegmentConverter：先按比例映射，再加剪切起点平移
+      pos = s0 + n / ratio;
       i0 = Math.floor(pos);
-      var hold = i0 >= srcLen - 1;
-      if (hold) i0 = srcLen - 1;
+      var hold = i0 >= s1 - 1;
+      if (hold) i0 = s1 - 1;
       t = hold ? 0 : pos - i0;
       for (c = 0; c < src.length; c++) {
         ch = src[c];
@@ -1347,8 +1468,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   /**
    * 合并计划：各非空片段的输出帧数、间隔帧数、总帧数。
    * 与 concatSegments 的长度语义一致（跳过空片段、段间插间隔）。
+   * 每个片段可带 trimStart / trimEnd（源帧）实现剪切——零拷贝，
+   * 由转换器按源区间读取，不生成裁剪副本。
    * @returns {{targetSampleRate, targetChannels, gapFrames,
-   *            parts:Array<{index:number, outFrames:number}>, totalFrames}}
+   *            parts:Array<{index:number, outFrames:number, trimStart:number, trimEnd:number}>, totalFrames}}
    */
   function planMerge(segments, options) {
     var opts = mergeOptions(options);
@@ -1362,9 +1485,17 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       if (!seg || !seg.pcm || !seg.pcm.channels || seg.pcm.channels.length === 0) {
         throw new Error('planMerge: 第 ' + (i + 1) + ' 个片段数据无效');
       }
-      var frames = conformedFrameCount(seg.pcm, opts.targetSampleRate);
+      var srcLen = seg.pcm.channels[0].length;
+      var trimStart = (typeof seg.trimStart === 'number' && seg.trimStart > 0)
+        ? Math.min(Math.floor(seg.trimStart), srcLen) : 0;
+      var trimEnd = (typeof seg.trimEnd === 'number' && seg.trimEnd < srcLen)
+        ? Math.max(Math.floor(seg.trimEnd), trimStart) : srcLen;
+      var frames = conformedFrameCount(seg.pcm, opts.targetSampleRate, trimStart, trimEnd);
       if (frames === 0) continue; // 跳过空片段（与 concatSegments 一致）
-      parts.push({ index: i, outFrames: frames });
+      parts.push({
+        index: i, outFrames: frames,
+        trimStart: trimStart, trimEnd: trimEnd
+      });
     }
     if (parts.length === 0) {
       throw new Error('planMerge: 所有片段均为空');
@@ -1410,7 +1541,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       for (i = 0; i < plan.parts.length; i++) {
         var pk = segmentPeakAfterFade(
           segments[plan.parts[i].index].pcm,
-          plan.targetSampleRate, plan.targetChannels, opts.fadeMs
+          plan.targetSampleRate, plan.targetChannels, opts.fadeMs,
+          plan.parts[i].trimStart, plan.parts[i].trimEnd
         );
         if (pk > peak) peak = pk;
       }
@@ -1428,6 +1560,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         targetChannels: plan.targetChannels,
         gain: gain,
         fadeMs: opts.fadeMs,
+        srcStart: part.trimStart,
+        srcEnd: part.trimEnd,
         int16: false
       });
       var done = 0;
@@ -1896,7 +2030,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
 
   /* ---------------- 状态 ---------------- */
   var state = {
-    segments: [],     // {id, name, source, blob, url, pcm, duration, sampleRate, channels, decoding, failed, errorMsg}
+    segments: [],     // {id, name, source, blob, url, pcm, duration, sampleRate, channels, decoding, failed, errorMsg,
+    //                   trimStart, trimEnd（剪切范围，秒；null = 不剪切）, trimOpen（面板展开）}
     audioCtx: null,
     mediaRecorder: null,
     recordChunks: [],
@@ -1904,7 +2039,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     recordStart: 0,
     seq: 0,
     playingId: null,  // 正在试听的片段 id
-    format: 'wav',    // 输出格式：wav / mp3 / m4a
+    format: 'mp3',    // 输出格式：wav / mp3 / m4a（默认 MP3：体积小、通用性最好）
     bitrate: 128,     // MP3 位率（kbps）
     m4aSupported: false,
     m4aRecorder: null,
@@ -1912,9 +2047,13 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     mergeToken: 0,    // 取消令牌：每次合并自增，回调里比对
     mergedBlob: null,
     mergedUrl: null,
-    mergedExt: 'wav',
-    mergedOpfsName: null // 当前结果对应的 OPFS 文件名（清理时保留）
+    mergedExt: 'mp3',
+    mergedOpfsName: null, // 当前结果对应的 OPFS 文件名（清理时保留）
+    serverReady: false    // 是否检测到局域网下载服务（tools/serve.js）
   };
+
+  // 拖拽排序状态（pointer events，一套代码兼容鼠标与触摸）
+  var segDrag = null; // {id, li, pointerId}
 
   var decodeQueue = [];    // 待解码片段队列（顺序执行，控制内存峰值）
   var decodeRunning = false;
@@ -2147,10 +2286,79 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   /* ---------------- 片段管理 ---------------- */
+  /**
+   * 片段的有效时长（秒）：应用剪切范围后的长度。
+   * 列表元信息、底部合计、体积估算、合并计划全部以此为准，
+   * 保证"看到多少就是合并出多少"。
+   */
+  function segEffectiveDuration(seg) {
+    if (!seg || !seg.duration) return 0;
+    var dur = seg.duration;
+    var start = typeof seg.trimStart === 'number' ? seg.trimStart : 0;
+    var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : dur;
+    if (end <= start) return 0;
+    return Math.min(end, dur) - Math.max(0, start);
+  }
+
   function totalDuration() {
     var sum = 0;
-    state.segments.forEach(function (s) { sum += s.duration || 0; });
+    state.segments.forEach(function (s) { sum += segEffectiveDuration(s); });
     return sum;
+  }
+
+  /** 片段剪切范围 → 源 PCM 帧区间（无效范围回退整段） */
+  function segTrimFrames(seg) {
+    var len = seg.pcm ? seg.pcm.channels[0].length : 0;
+    if (!len) return { start: 0, end: 0 };
+    var start = typeof seg.trimStart === 'number'
+      ? Math.max(0, Math.min(Math.round(seg.trimStart * seg.pcm.sampleRate), len)) : 0;
+    var end = typeof seg.trimEnd === 'number'
+      ? Math.max(0, Math.min(Math.round(seg.trimEnd * seg.pcm.sampleRate), len)) : len;
+    if (end <= start) return { start: 0, end: len };
+    return { start: start, end: end };
+  }
+
+  /** 复制片段：共享同一 blob 与 PCM 引用（零拷贝、零重新解码） */
+  function copySegment(id) {
+    if (state.busy) {
+      setStatus('合并进行中：请先取消合并，再复制片段', true);
+      return;
+    }
+    var seg = state.segments.find(function (s) { return s.id === id; });
+    if (!seg) return;
+    state.seq++;
+    var copy = {
+      id: 'seg' + state.seq,
+      name: seg.name + ' 副本',
+      source: seg.source,
+      blob: seg.blob,
+      url: null,
+      pcm: seg.pcm,             // 共享引用：合并管线只读输入，释放仅断开各自引用
+      audioBuffer: seg.audioBuffer,
+      duration: seg.duration,
+      sampleRate: seg.sampleRate,
+      channels: seg.channels,
+      decoding: false,
+      failed: false,
+      released: !seg.pcm,       // 原片段还没解码完 → 副本入队自己解
+      trimStart: seg.trimStart != null ? seg.trimStart : null,
+      trimEnd: seg.trimEnd != null ? seg.trimEnd : null,
+      trimOpen: false
+    };
+    state.segments.push(copy);
+    if (copy.released) {
+      copy.decoding = true;
+      decodeQueue.push(copy);
+    }
+    renderList();
+    if (copy.released) pumpQueue();
+    setStatus('已复制「' + seg.name + '」（与原片段共享数据，不额外占内存）');
+  }
+
+  /** 重置某片段的剪切范围为整段 */
+  function resetTrim(seg) {
+    seg.trimStart = null;
+    seg.trimEnd = null;
   }
 
   function estimateTargetRate() {
@@ -2180,7 +2388,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         released: false,   // PCM 是否已在合并中被释放（重试时自动重新解码）
         duration: 0,
         sampleRate: 0,
-        channels: 0
+        channels: 0,
+        trimStart: null,   // 剪切范围（秒）；null = 不剪切
+        trimEnd: null,
+        trimOpen: false    // 剪切面板是否展开
       };
       state.segments.push(seg);
       added.push(seg);
@@ -2422,21 +2633,6 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     renderList();
   }
 
-  function moveSegment(id, dir) {
-    if (state.busy) { // 同 removeSegment：合并中调整顺序不影响已捕获的合并数组
-      setStatus('合并进行中：请先取消合并，再调整片段列表', true);
-      return;
-    }
-    var idx = state.segments.findIndex(function (s) { return s.id === id; });
-    if (idx < 0) return;
-    var target = idx + dir;
-    if (target < 0 || target >= state.segments.length) return;
-    var tmp = state.segments[idx];
-    state.segments[idx] = state.segments[target];
-    state.segments[target] = tmp;
-    renderList();
-  }
-
   /* ---------------- 片段试听 ---------------- */
   function stopSegPlayback() {
     var player = $('segPlayer');
@@ -2594,7 +2790,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       li.dataset.id = seg.id;
       if (state.playingId === seg.id) li.classList.add('playing');
 
-      li.appendChild(el('span', 'seg-idx', String(i + 1)));
+      // 拖动把手（pointer events 排序，兼容鼠标与触摸）
+      var drag = el('span', 'seg-drag', '⠿');
+      drag.title = '按住拖动调整顺序';
+      li.appendChild(drag);
 
       var play = el('button', 'icon-btn play', state.playingId === seg.id ? '⏸' : '▶');
       play.type = 'button';
@@ -2604,44 +2803,136 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       li.appendChild(play);
 
       var info = el('div', 'seg-info');
-      info.appendChild(el('div', 'seg-name', seg.name));
-      var meta;
-      if (seg.decoding) {
-        meta = '解码中…';
-      } else if (seg.failed) {
-        meta = '解码失败：' + (seg.errorMsg || '格式不支持');
-      } else {
-        meta = seg.source + (seg.usedFallback ? '（内置解码）' : '') + ' · ' +
-          fmtTime(seg.duration) +
-          ' · ' + Math.round(seg.sampleRate / 1000) + 'kHz · ' +
-          (seg.channels === 1 ? '单声道' : seg.channels + ' 声道');
-      }
-      info.appendChild(el('div', 'seg-meta', meta));
+      info.appendChild(el('div', 'seg-name', (i + 1) + '. ' + seg.name));
+      info.appendChild(el('div', 'seg-meta', segMetaText(seg)));
       if (seg.warn) info.appendChild(el('div', 'seg-warn', '⚠ ' + seg.warn));
+      if (seg.trimOpen && !seg.decoding && !seg.failed) info.appendChild(buildTrimPanel(seg));
       li.appendChild(info);
 
       var actions = el('div', 'seg-actions');
-      var up = el('button', 'icon-btn', '↑');
-      up.type = 'button';
-      up.title = '上移';
-      up.dataset.act = 'up';
-      if (i === 0) up.disabled = true;
-      var down = el('button', 'icon-btn', '↓');
-      down.type = 'button';
-      down.title = '下移';
-      down.dataset.act = 'down';
-      if (i === state.segments.length - 1) down.disabled = true;
+      var trimBtn = el('button', 'icon-btn', '✂');
+      trimBtn.type = 'button';
+      trimBtn.title = '剪切片段';
+      trimBtn.dataset.act = 'trim';
+      if (seg.decoding || seg.failed) trimBtn.disabled = true;
+      var copyBtn = el('button', 'icon-btn', '⧉');
+      copyBtn.type = 'button';
+      copyBtn.title = '复制片段';
+      copyBtn.dataset.act = 'copy';
+      if (state.busy) copyBtn.disabled = true;
       var del = el('button', 'icon-btn danger', '✕');
       del.type = 'button';
       del.title = '移除';
       del.dataset.act = 'del';
-      actions.appendChild(up);
-      actions.appendChild(down);
+      actions.appendChild(trimBtn);
+      actions.appendChild(copyBtn);
       actions.appendChild(del);
       li.appendChild(actions);
 
       ul.appendChild(li);
     });
+  }
+
+  /** 片段元信息文本（含剪切范围提示） */
+  function segMetaText(seg) {
+    if (seg.decoding) return '解码中…';
+    if (seg.failed) return '解码失败：' + (seg.errorMsg || '格式不支持');
+    var text = seg.source + (seg.usedFallback ? '（内置解码）' : '') + ' · ' +
+      fmtTime(segEffectiveDuration(seg)) +
+      ' · ' + Math.round(seg.sampleRate / 1000) + 'kHz · ' +
+      (seg.channels === 1 ? '单声道' : seg.channels + ' 声道');
+    if (typeof seg.trimStart === 'number' || typeof seg.trimEnd === 'number') {
+      text += ' · 已剪切 ' + fmtSec(seg.trimStart || 0) + '–' +
+        fmtSec(seg.trimEnd != null ? seg.trimEnd : seg.duration);
+    }
+    return text;
+  }
+
+  function fmtSec(sec) {
+    var s = Math.max(0, sec || 0);
+    var m = Math.floor(s / 60);
+    var r = s - m * 60;
+    return m + ':' + (r < 10 ? '0' : '') + r.toFixed(1);
+  }
+
+  /** 构建片段剪切面板（起止时间滑杆 + 数字输入） */
+  function buildTrimPanel(seg) {
+    var dur = seg.duration || 0;
+    var start = typeof seg.trimStart === 'number' ? seg.trimStart : 0;
+    var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : dur;
+    var panel = el('div', 'trim-panel');
+    panel.dataset.role = 'trim';
+
+    function row(label, which, value, max) {
+      var r = el('div', 'trim-row');
+      r.appendChild(el('span', 'trim-label', label));
+      var range = document.createElement('input');
+      range.type = 'range';
+      range.className = 'trim-range';
+      range.min = '0';
+      range.max = String(max);
+      range.step = '0.1';
+      range.value = String(value);
+      range.dataset.trim = which;
+      r.appendChild(range);
+      var num = document.createElement('input');
+      num.type = 'number';
+      num.className = 'trim-num';
+      num.min = '0';
+      num.max = String(max);
+      num.step = '0.1';
+      num.value = value.toFixed(1);
+      num.dataset.trim = which;
+      r.appendChild(num);
+      return r;
+    }
+
+    panel.appendChild(row('起点', 'start', start, dur));
+    panel.appendChild(row('终点', 'end', end, dur));
+
+    var times = el('div', 'trim-times');
+    times.dataset.role = 'trim-times';
+    times.textContent = fmtSec(start) + ' → ' + fmtSec(end) +
+      '（保留 ' + fmtSec(Math.max(0, end - start)) + '）';
+    panel.appendChild(times);
+
+    var ops = el('div', 'trim-ops');
+    var reset = el('button', 'btn ghost tiny', '恢复整段');
+    reset.type = 'button';
+    reset.dataset.act = 'trim-reset';
+    var done = el('button', 'btn ghost tiny', '完成');
+    done.type = 'button';
+    done.dataset.act = 'trim-done';
+    ops.appendChild(reset);
+    ops.appendChild(done);
+    panel.appendChild(ops);
+    return panel;
+  }
+
+  /** 就地更新某片段的元信息与剪切面板时间显示（不重渲列表，避免打断滑杆拖动） */
+  function refreshSegRow(seg) {
+    var li = $('segmentList').querySelector('.seg[data-id="' + seg.id + '"]');
+    if (!li) return;
+    var meta = li.querySelector('.seg-meta');
+    if (meta) meta.textContent = segMetaText(seg);
+    var times = li.querySelector('[data-role="trim-times"]');
+    if (times) {
+      var start = typeof seg.trimStart === 'number' ? seg.trimStart : 0;
+      var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : seg.duration;
+      times.textContent = fmtSec(start) + ' → ' + fmtSec(end) +
+        '（保留 ' + fmtSec(Math.max(0, end - start)) + '）';
+    }
+    updateActionBar();
+    updateSizeEstimate();
+  }
+
+  /** 从 DOM 事件目标解析出 trim 输入对应的片段与方向 */
+  function trimTargetFrom(input) {
+    var li = input.closest('.seg');
+    if (!li) return null;
+    var seg = state.segments.find(function (s) { return s.id === li.dataset.id; });
+    if (!seg) return null;
+    return { seg: seg, which: input.dataset.trim };
   }
 
   /* ---------------- 录音 ---------------- */
@@ -2852,15 +3143,16 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     renderList();
   }
 
-  /** 合并内存估算（字节）：输入解码数据 + 输出文件 */
+  /** 合并内存估算（字节）：输入解码数据 + 输出文件（时长按剪切后有效时长） */
   function estimateMergeBytes() {
     var inputs = 0, dur = 0;
     state.segments.forEach(function (s) {
-      dur += s.duration || 0;
+      var eff = segEffectiveDuration(s);
+      dur += eff;
       if (s.pcm) {
         inputs += s.pcm.channels[0].length * s.pcm.channels.length * 4;
       } else {
-        inputs += (s.duration || 0) * (s.sampleRate || 44100) * (s.channels || 1) * 4;
+        inputs += eff * (s.sampleRate || 44100) * (s.channels || 1) * 4;
       }
     });
     var out = 0;
@@ -2879,8 +3171,12 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var segs = state.segments;
     var gapSec = parseFloat($('gapRange').value) || 0;
     var targetRate = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
+    // 剪切范围（秒 → 源帧）随片段传入：核心层按源区间零拷贝读取，不生成裁剪副本
     var plan = AudioCore.planMerge(
-      segs.map(function (s) { return { name: s.name, pcm: s.pcm }; }),
+      segs.map(function (s) {
+        var t = segTrimFrames(s);
+        return { name: s.name, pcm: s.pcm, trimStart: t.start, trimEnd: t.end };
+      }),
       { targetSampleRate: targetRate, targetChannels: 2, gapSec: gapSec, fadeMs: 8 }
     );
 
@@ -2890,7 +3186,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       var peak = 0;
       plan.parts.forEach(function (p) {
         peak = Math.max(peak, AudioCore.segmentPeakAfterFade(
-          segs[p.index].pcm, plan.targetSampleRate, plan.targetChannels, 8
+          segs[p.index].pcm, plan.targetSampleRate, plan.targetChannels, 8,
+          p.trimStart, p.trimEnd
         ));
       });
       if (peak > 0 && isFinite(peak)) gain = Math.min(0.89 / peak, 8);
@@ -2975,6 +3272,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
           targetChannels: plan.targetChannels,
           gain: gain,
           fadeMs: 8,
+          srcStart: part.trimStart,
+          srcEnd: part.trimEnd,
           int16: true
         });
         var done = 0;
@@ -3052,13 +3351,22 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       var t0 = t;
 
       function segmentBuffer(seg) {
-        // 采样率一致：直接用解码缓冲（零拷贝）；否则仅对本段重采样
-        if (seg.audioBuffer && seg.audioBuffer.sampleRate === targetRate) return seg.audioBuffer;
+        // 剪切范围：优先用浏览器原生 slice（AudioBuffer 路径，零 WASM 依赖）
+        var trim = segTrimFrames(seg);
+        if (seg.audioBuffer && seg.audioBuffer.sampleRate === targetRate) {
+          if (trim.start === 0 && trim.end === seg.audioBuffer.length) return seg.audioBuffer;
+          return seg.audioBuffer.slice(
+            trim.start / seg.audioBuffer.sampleRate,
+            trim.end / seg.audioBuffer.sampleRate
+          );
+        }
         var src = seg.pcm;
         var conv = AudioCore.createSegmentConverter(src, {
           targetRate: targetRate,
           targetChannels: src.channels.length, // 声道不变，单声道由 WebAudio 上混
           fadeMs: 0,
+          srcStart: trim.start,
+          srcEnd: trim.end,
           int16: false
         });
         var buf = ctx.createBuffer(src.channels.length, conv.outFrames, targetRate);
@@ -3174,7 +3482,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
           setProgress(p, 'M4A 实时编码中');
         });
         if (token !== state.mergeToken) throw canceledError();
-        var mDur = segs.reduce(function (a, s) { return a + (s.duration || 0); }, 0) +
+        var mDur = segs.reduce(function (a, s) { return a + segEffectiveDuration(s); }, 0) +
           mGap * (segs.length - 1);
         finishResult(r.blob, r.ext, r.mime, {
           sampleRate: mTarget, durationSec: mDur, bitrate: 0
@@ -3284,9 +3592,101 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       ' · 时长 ' + fmtTime(meta.durationSec) +
       ' · 大小 ' + fmtSize(blob.size);
     $('resultBox').hidden = false;
+    // 新结果生成后，上一轮的保存链接已失效（服务端文件仍是旧的）
+    $('saveLink').hidden = true;
+    $('saveHint').textContent = '';
+    $('saveBox').hidden = !state.serverReady;
     var big = blob.size > 60 * 1024 * 1024;
     setStatus('合并完成，可试听、分享或下载' +
       (big ? '（文件较大，点「试听」时才加载，避免 iOS 因内存不足重载页面）' : ''));
+  }
+
+  /**
+   * 保存到「文件」App：借用服务端直链 + Content-Disposition（iOS 唯一稳定通道）。
+   *
+   * iOS 上的三条前端路径都不理想：
+   *   - `a[download]` + blob URL：iOS 各版本行为反复，时好时坏；
+   *   - `window.open(blobURL)`：交给系统播放器打开，而播放器没有保存入口；
+   *   - `navigator.share({files})`：可用，但要把整包读进内存，大文件容易触发页面重载。
+   * 所以在电脑上跑 `node tools/serve.js`（局域网）后，把结果 POST 上去换一个
+   * 普通链接：用户点链接 → 浏览器下载管理器接管 → 存到「文件」App。
+   *
+   * 接口一律用相对路径（'api/...'），以适配子目录部署（如 GitHub Pages 的 /audio-merge-lab/）。
+   */
+  function probeDownloadServer() {
+    if (typeof fetch !== 'function') return;
+    fetch('api/health', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (info) {
+        // 线上静态托管没有该接口（404 或返回 HTML），解析失败即视为不可用
+        if (info && info.ok && info.upload) {
+          state.serverReady = true;
+          $('saveBox').hidden = false;
+        }
+      })
+      .catch(function () { /* 未运行下载服务：不显示入口，其余功能不受影响 */ });
+  }
+
+  function uploadForDownload() {
+    var blob = state.mergedBlob;
+    if (!blob) { setStatus('还没有可保存的结果', true); return; }
+    var ext = state.mergedExt || 'wav';
+    var mime = blob.type || 'audio/wav';
+    var filename = 'merged-' + nowStamp() + '.' + ext;
+    var btn = $('btnSaveFile');
+    btn.disabled = true;
+    showProgress(0, '上传');
+    setStatus('正在上传到本机下载服务…');
+
+    // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) setProgress(e.loaded / e.total, '上传');
+    };
+    xhr.onload = function () {
+      btn.disabled = false;
+      hideProgress();
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+      if (xhr.status >= 200 && xhr.status < 300 && data && data.url) {
+        showSaveLink(data.url, data.name || filename, data.size || blob.size);
+      } else {
+        setStatus('生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)), true);
+      }
+    };
+    xhr.onerror = function () {
+      btn.disabled = false;
+      hideProgress();
+      setStatus('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi', true);
+    };
+    xhr.send(blob);
+  }
+
+  function showSaveLink(url, name, size) {
+    var link = $('saveLink');
+    link.href = url;
+    // 同源链接：非 iOS 平台由此拿到文件名；iOS 主要靠服务端的 Content-Disposition
+    link.setAttribute('download', name);
+    link.hidden = false;
+    $('saveHint').textContent = '点上方链接保存：' + name + '（' + fmtSize(size) + '）。' +
+      'iOS 下载完成后去「文件」App 查看；若点了没反应，长按链接选择「下载链接文件」。';
+    setStatus('下载链接已生成：' + name);
+  }
+
+  /** 用 <a download> 触发下载；返回值只代表"已挂接"，不保证浏览器真的下载 */
+  function downloadViaAnchor(url, filename) {
+    try {
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   async function shareOrDownload() {
@@ -3298,11 +3698,18 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var size = state.mergedBlob ? state.mergedBlob.size : 0;
     var isIOS = isIOSDevice();
 
+    // 下载服务可用时优先走它：直链下载在 iOS 上最稳，且不必把整包读进内存
+    if (state.serverReady) {
+      uploadForDownload();
+      return;
+    }
+
     // iOS + 大文件：系统分享要把整包读进内存（fetch → File），容易触发重载；
     // 直接交给系统播放器（流式读取），由用户在播放器里分享/存储
     if (isIOS && size > 80 * 1024 * 1024) {
       window.open(url, '_blank');
-      setStatus('文件较大，已交给系统播放器打开（可用播放器的分享 / 存储功能）');
+      setStatus('文件较大，已交给系统播放器打开（可用播放器的分享 / 存储功能）' +
+        '；要保存到「文件」App，请在电脑上跑 node tools/serve.js 后用「生成保存链接」', true);
       return;
     }
 
@@ -3326,24 +3733,73 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       // 分享不可用则继续走下载/打开
     }
 
-    // iOS Safari 对 blob URL 的 download 属性支持不可靠，改为新窗口打开，
-    // 由系统播放器接管（用户可用其分享/存储功能）
+    // iOS 13+ 对同源 blob URL 的 download 支持可用（失败时静默），
+    // 因此先试下载，实在不行才退回播放器 —— 播放器没有保存入口，只能作为兜底
     if (isIOS) {
+      if (downloadViaAnchor(url, filename)) {
+        setStatus('已触发下载：' + filename + '。若没有弹出保存，请用「生成保存链接」或长按链接下载');
+        return;
+      }
       window.open(url, '_blank');
-      setStatus('已在新窗口打开，可通过系统播放器分享或存储');
+      setStatus('已在新窗口打开：系统播放器无法直接保存，建议在电脑上跑 node tools/serve.js 后用「生成保存链接」', true);
       return;
     }
 
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    downloadViaAnchor(url, filename);
     setStatus('已触发下载：' + filename);
   }
 
   /* ---------------- 事件绑定 ---------------- */
+  /**
+   * 拖拽排序：用 Pointer Events 实现（一套代码同时兼容鼠标与触摸，
+   * 不依赖 HTML5 drag&drop——后者在移动端浏览器支持不完整）。
+   * 按下把手即进入拖拽，实时把行插到目标位置，松手后按 DOM 顺序
+   * 重排 state.segments 并重渲。合并进行中禁用。
+   */
+  function bindSegDrag() {
+    var ul = $('segmentList');
+
+    ul.addEventListener('pointerdown', function (e) {
+      if (state.busy) return;
+      var handle = e.target.closest ? e.target.closest('.seg-drag') : null;
+      if (!handle) return;
+      var li = handle.closest('.seg');
+      if (!li) return;
+      segDrag = { id: li.dataset.id, li: li, pointerId: e.pointerId };
+      li.classList.add('dragging');
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* 旧内核忽略 */ }
+      e.preventDefault(); // 阻止触摸滚动与文本选择
+    });
+
+    document.addEventListener('pointermove', function (e) {
+      if (!segDrag || e.pointerId !== segDrag.pointerId) return;
+      var over = document.elementFromPoint(e.clientX, e.clientY);
+      var target = over && over.closest ? over.closest('.seg') : null;
+      var list = $('segmentList');
+      if (!target || target === segDrag.li || target.parentNode !== list) return;
+      var rect = target.getBoundingClientRect();
+      var after = e.clientY > rect.top + rect.height / 2;
+      list.insertBefore(segDrag.li, after ? target.nextSibling : target);
+    });
+
+    function endDrag(e) {
+      if (!segDrag || (e && e.pointerId !== segDrag.pointerId)) return;
+      var li = segDrag.li;
+      li.classList.remove('dragging');
+      segDrag = null;
+      // 按 DOM 顺序同步数据层
+      var order = {};
+      Array.prototype.forEach.call($('segmentList').children, function (node) {
+        if (node.dataset && node.dataset.id) order[node.dataset.id] = Object.keys(order).length;
+      });
+      state.segments.sort(function (a, b) { return order[a.id] - order[b.id]; });
+      renderList();
+      setStatus('顺序已调整');
+    }
+    document.addEventListener('pointerup', endDrag);
+    document.addEventListener('pointercancel', endDrag);
+  }
+
   /** 文件选择回调（主入口与兼容模式入口共用） */
   function handleFilePick(e) {
     var files = Array.prototype.slice.call(e.target.files || []);
@@ -3366,6 +3822,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
 
     $('btnRecord').addEventListener('click', toggleRecord);
     $('btnShare').addEventListener('click', shareOrDownload);
+    $('btnSaveFile').addEventListener('click', uploadForDownload);
     $('btnPlayResult').addEventListener('click', playResult);
     $('btnCancel').addEventListener('click', cancelMerge);
 
@@ -3401,10 +3858,45 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       var id = li.dataset.id;
       var act = btn.dataset.act;
       if (act === 'play') toggleSegPlayback(id);
-      else if (act === 'up') moveSegment(id, -1);
-      else if (act === 'down') moveSegment(id, 1);
       else if (act === 'del') removeSegment(id);
+      else if (act === 'copy') copySegment(id);
+      else if (act === 'trim') {
+        var seg = state.segments.find(function (s) { return s.id === id; });
+        if (seg) { seg.trimOpen = !seg.trimOpen; renderList(true); }
+      } else if (act === 'trim-reset') {
+        var seg2 = state.segments.find(function (s) { return s.id === id; });
+        if (seg2) { resetTrim(seg2); renderList(true); setStatus('已恢复「' + seg2.name + '」为整段'); }
+      } else if (act === 'trim-done') {
+        var seg3 = state.segments.find(function (s) { return s.id === id; });
+        if (seg3) {
+          seg3.trimOpen = false;
+          renderList(true);
+          if (typeof seg3.trimStart === 'number' || typeof seg3.trimEnd === 'number') {
+            setStatus('「' + seg3.name + '」将只合并 ' +
+              fmtSec(seg3.trimStart || 0) + '–' +
+              fmtSec(seg3.trimEnd != null ? seg3.trimEnd : seg3.duration) + ' 的部分');
+          }
+        }
+      }
     });
+
+    // 剪切范围输入（滑杆 / 数字框）：实时写回片段状态并就地刷新显示
+    $('segmentList').addEventListener('input', function (e) {
+      var input = e.target;
+      if (!input.classList) return;
+      var isRange = input.classList.contains('trim-range');
+      var isNum = input.classList.contains('trim-num');
+      if (!isRange && !isNum) return;
+      var t = trimTargetFrom(input);
+      if (!t) return;
+      var v = parseFloat(input.value);
+      if (!isFinite(v) || v < 0) return;
+      if (t.which === 'start') t.seg.trimStart = v;
+      else t.seg.trimEnd = v;
+      refreshSegRow(t.seg);
+    });
+
+    bindSegDrag();
 
     $('formatGroup').addEventListener('click', function (e) {
       var btn = e.target.closest('.seg-btn');
@@ -3433,9 +3925,12 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     try {
       bind();
       detectFormats();
-      setFormat('wav');
+      setFormat('mp3');
       renderList();
-      setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并」');
+      setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并为 MP3」');
+
+      // 探测局域网下载服务（tools/serve.js）：可用才显示「生成保存链接」
+      probeDownloadServer();
 
       // 页脚版本号：取核心层的单一权威值（作者与链接在模板中静态声明）
       $('appVersion').textContent = 'v' + AudioCore.APP_VERSION;
