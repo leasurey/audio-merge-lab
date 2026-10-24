@@ -1,12 +1,13 @@
 {
   "name": "audio-merge-lab",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "author": "k",
   "description": "跨平台录音合并工具（iOS / Android / Web，纯本地处理，WAV/MP3/M4A 输出）",
   "scripts": {
     "build": "node tools/build.js",
-    "test": "node test/core.test.js && node test/mp3.test.js",
+    "serve": "node tools/serve.js",
+    "test": "node test/core.test.js && node test/mp3.test.js && node test/serve.test.js",
     "verify": "python test/verify_wav.py",
     "cap:sync": "npm run build && cap sync",
     "cap:add:android": "cap add android",

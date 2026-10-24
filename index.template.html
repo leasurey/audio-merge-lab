@@ -116,6 +116,15 @@
       <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
       <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
     </div>
+    <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
+         iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
+    <div id="saveBox" hidden>
+      <div class="btn-row">
+        <button class="btn ghost btn-lg" id="btnSaveFile" type="button">💾 生成保存链接</button>
+      </div>
+      <a class="btn primary btn-lg save-link" id="saveLink" href="#" target="_blank" rel="noopener" hidden>💾 点此保存（存到「文件」App）</a>
+      <p class="hint" id="saveHint"></p>
+    </div>
   </section>
 
   <div class="action-bar" id="actionBar" hidden>

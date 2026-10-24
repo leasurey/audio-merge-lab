@@ -6,7 +6,7 @@
 
 导入或录下多段音频，按顺序合并为一个 WAV / MP3 / M4A —— 全程在你的设备本地完成，数据不经过任何服务器。
 
-[![Version](https://img.shields.io/badge/version-0.4.0-4f8cff)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.1-4f8cff)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web%20·%20iOS%20·%20Android-a371f7)](#-兼容性)
 [![Privacy](https://img.shields.io/badge/隐私-纯本地不上传-ff6b6b)](#-已知限制)
@@ -32,7 +32,7 @@
 - **灵活拼接**：片段间隔 0–3 秒可调、首尾淡变防爆音、可选峰值归一化（统一各段音量）
 - **长音频友好**：流式合并 + OPFS 磁盘落盘，两个 40 分钟文件合并内存峰值从 ~4GB 降到 ~200MB
 - **解码降级链**：平台解不动的 WAV / MP3 自动换内置解析器（V0.3.5 起真正生效），不支持格式精确报名并给转换建议
-- **分享 / 下载**：Web Share API 一键分享，iOS 大文件自动降级系统播放器
+- **分享 / 下载**：Web Share API 一键分享；iOS 可用可选的局域网服务生成下载直链，存到「文件」App（见下）
 - **PWA**：可添加到主屏、离线可用
 - **老浏览器兜底**：ES5 启动守卫 + 兼容性自检页，旧内核看到的是可读提示而不是白屏
 
@@ -51,6 +51,30 @@ python -m http.server 8000 # 手机连同一 Wi-Fi 访问 http://<电脑IP>:8000
 ```
 
 > 直接双击 `dist/index.html` 也能用（导入 / 合并 / MP3 均可）；「录音」需要 localhost 或 HTTPS 环境。
+
+### iOS 想保存成文件？用可选的局域网服务
+
+iOS 上没有稳定的"前端直接保存文件"通道：`a[download]` 各版本行为反复，`window.open(blobURL)`
+只会交给系统播放器打开，而**系统播放器没有保存入口**。所以做了一个可选的本地服务，
+走「服务端直链 + `Content-Disposition: attachment`」——这是 iOS 上最稳的一条路。
+
+```bash
+node tools/build.js
+node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
+```
+
+控制台会打印局域网地址（如 `http://192.168.0.8:8010`），手机与电脑连**同一个 Wi-Fi**，
+用 Safari 打开它 → 正常合并 → 结果区会多出「💾 生成保存链接」：
+
+1. 点「生成保存链接」→ 结果上传到本机服务（进度条可见，文件落在项目 `uploads/`，6 小时后自动清理）
+2. 点出现的链接 → Safari 下载 → 存到「文件」App；若点了没反应，**长按链接**选「下载链接文件」
+
+> 手机打不开时多半是 Windows 防火墙拦截：右键 `tools/allow_lan.bat` → **以管理员身份运行**
+> （端口不对就带参数：`tools\allow_lan.bat 8020`）。撤销：`netsh advfirewall firewall delete rule name="AML-Serve-8010"`。
+
+> 该服务**完全可选**：不运行时页面与线上版本行为不变（保存入口不显示）。只有你主动点
+> 「生成保存链接」时音频才会离开浏览器，且只到你自己电脑的 `uploads/` 目录。
+> 建议在可信的家用 / 办公网络下使用，不要直接暴露到公网。
 
 ## 📱 三步上手
 
@@ -99,6 +123,16 @@ python -m http.server 8000 # 手机连同一 Wi-Fi 访问 http://<电脑IP>:8000
 ## ❓ 常见问题
 
 <details>
+<summary><b>iOS 上点「分享 / 下载」只会打开播放器，存不下来</b></summary>
+
+这是 iOS 的限制：`window.open(blobURL)` 会把音频交给系统播放器，而**播放器没有保存入口**；
+`a[download]` 在 iOS 各版本行为也不稳定。解决办法：电脑上跑 `node tools/serve.js`，
+手机用 Safari 打开它打印的局域网地址，结果区会出现「💾 生成保存链接」，
+点链接即可存到「文件」App（若点了没反应，长按链接选「下载链接文件」）。
+不想折腾时，用「分享」按钮里的**系统分享菜单**也可以选「存储到文件」（大文件有内存压力）。
+</details>
+
+<details>
 <summary><b>点导入没反应 / 选择器里没有文件</b></summary>
 
 部分国产内核对 `accept` 过滤有 bug。点「选不到文件？用兼容模式选择（不过滤格式）」，该入口任何浏览器都能弹出选择器。
@@ -142,6 +176,9 @@ python -m http.server 8000 # 手机连同一 Wi-Fi 访问 http://<电脑IP>:8000
 - 桌面 Chrome 不支持 AAC 解码（m4a 导入在 iOS / Android 上正常）
 - 只做顺序拼接 + 间隔 + 淡变 + 归一化；裁剪、变速、交叉淡入淡出不在范围内
 - `dist/` 不入库，克隆后需先 `node tools/build.js`
+- **iOS 保存**：没有稳定的前端保存通道（系统播放器无保存入口、`a[download]` 行为反复）。
+  默认的「分享」可用（含「存储到文件」）；要更稳的直链保存，需自己在本机跑 `tools/serve.js`
+  ——这是唯一会让音频离开浏览器的路径（只到你自己的电脑）
 
 ## 🏗 项目结构
 
@@ -156,7 +193,8 @@ python -m http.server 8000 # 手机连同一 Wi-Fi 访问 http://<电脑IP>:8000
 │   └─ vendor/              lamejs（MP3 编码）+ mpg123-decoder（MP3 WASM 解码），来源与许可证见 THIRD-PARTY-NOTICES.md
 ├─ index.template.html      页面骨架（构建占位符）
 ├─ tools/build.js           构建：内联单文件 + PWA 资源 + 图标生成
-├─ test/                    43 项核心单测 + 9 项 MP3 功能测试 + Python 交叉校验
+├─ tools/serve.js           可选的局域网自托管服务：静态页 + 上传/下载直链（npm run serve）
+├─ test/                    48 项核心单测 + 9 项 MP3 功能测试 + 24 项下载服务端到端测试 + Python 交叉校验
 ├─ compat.html / guide.html / convert.html   自检 / 指南 / 转换页
 ├─ capacitor.config.json    Capacitor 打包配置（webDir → dist）
 └─ CHANGELOG.md · LICENSE · THIRD-PARTY-NOTICES.md · 使用说明.md
@@ -177,9 +215,9 @@ python -m http.server 8000 # 手机连同一 Wi-Fi 访问 http://<电脑IP>:8000
 
 ```bash
 node tools/build.js                                  # 构建（单文件 HTML + PWA + 图标）
-node test/core.test.js && node test/mp3.test.js      # 43 + 9 项测试
+npm test                                             # 48 + 9 + 24 项测试
+node tools/serve.js                                  # 可选：启动局域网下载服务（默认 8010）
 python test/verify_wav.py                            # Python wave 模块交叉校验 WAV 产物
-npm test                                             # 上述两项测试
 ```
 
 - 核心逻辑（`audio-core.js`）为纯函数，可在 Node 直接单测；UI 层（`app.js`）与核心分离

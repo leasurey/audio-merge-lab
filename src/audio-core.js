@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.4.0';
+  var APP_VERSION = '0.4.1';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）

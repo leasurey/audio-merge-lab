@@ -3,5 +3,7 @@ node_modules/
 android/
 ios/
 dist/
+# 局域网下载服务的落盘目录（tools/serve.js 运行时生成）
+uploads/
 # 临时校验/诊断脚本（.check-*.js 等，不入库）
 .check-*.js

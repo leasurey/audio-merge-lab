@@ -96,3 +96,9 @@ iOS（`ios/App/App/Info.plist`）：
 iOS 后台持续录音：Xcode → Signing & Capabilities → Background Modes → 勾选 "Audio, AirPlay, and Picture in Picture"。
 
 注意：Capacitor 的 WKWebView 里 `a[download]` 行为与浏览器不同，导出文件建议后续接 `@capacitor/filesystem` + `@capacitor/share` 插件（当前以浏览器分享/下载为主）。
+
+**iOS 保存的当前解法（V0.4.1）**：WKWebView 里连 `Content-Disposition: attachment` 也不会自动下载，
+所以浏览器路径下另给了 `tools/serve.js` —— 局域网自托管 + `/api/file/:id` 直链，
+让 Safari（而非 App 内 WebView）接管下载并存到「文件」App。
+若后续做原生壳，正确的落点仍是 `@capacitor/filesystem` 写盘 + `@capacitor/share` 分享，
+这套 HTTP 服务只服务浏览器场景。

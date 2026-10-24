@@ -34,7 +34,8 @@
     mergedBlob: null,
     mergedUrl: null,
     mergedExt: 'mp3',
-    mergedOpfsName: null // 当前结果对应的 OPFS 文件名（清理时保留）
+    mergedOpfsName: null, // 当前结果对应的 OPFS 文件名（清理时保留）
+    serverReady: false    // 是否检测到局域网下载服务（tools/serve.js）
   };
 
   // 拖拽排序状态（pointer events，一套代码兼容鼠标与触摸）
@@ -1577,9 +1578,101 @@
       ' · 时长 ' + fmtTime(meta.durationSec) +
       ' · 大小 ' + fmtSize(blob.size);
     $('resultBox').hidden = false;
+    // 新结果生成后，上一轮的保存链接已失效（服务端文件仍是旧的）
+    $('saveLink').hidden = true;
+    $('saveHint').textContent = '';
+    $('saveBox').hidden = !state.serverReady;
     var big = blob.size > 60 * 1024 * 1024;
     setStatus('合并完成，可试听、分享或下载' +
       (big ? '（文件较大，点「试听」时才加载，避免 iOS 因内存不足重载页面）' : ''));
+  }
+
+  /**
+   * 保存到「文件」App：借用服务端直链 + Content-Disposition（iOS 唯一稳定通道）。
+   *
+   * iOS 上的三条前端路径都不理想：
+   *   - `a[download]` + blob URL：iOS 各版本行为反复，时好时坏；
+   *   - `window.open(blobURL)`：交给系统播放器打开，而播放器没有保存入口；
+   *   - `navigator.share({files})`：可用，但要把整包读进内存，大文件容易触发页面重载。
+   * 所以在电脑上跑 `node tools/serve.js`（局域网）后，把结果 POST 上去换一个
+   * 普通链接：用户点链接 → 浏览器下载管理器接管 → 存到「文件」App。
+   *
+   * 接口一律用相对路径（'api/...'），以适配子目录部署（如 GitHub Pages 的 /audio-merge-lab/）。
+   */
+  function probeDownloadServer() {
+    if (typeof fetch !== 'function') return;
+    fetch('api/health', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (info) {
+        // 线上静态托管没有该接口（404 或返回 HTML），解析失败即视为不可用
+        if (info && info.ok && info.upload) {
+          state.serverReady = true;
+          $('saveBox').hidden = false;
+        }
+      })
+      .catch(function () { /* 未运行下载服务：不显示入口，其余功能不受影响 */ });
+  }
+
+  function uploadForDownload() {
+    var blob = state.mergedBlob;
+    if (!blob) { setStatus('还没有可保存的结果', true); return; }
+    var ext = state.mergedExt || 'wav';
+    var mime = blob.type || 'audio/wav';
+    var filename = 'merged-' + nowStamp() + '.' + ext;
+    var btn = $('btnSaveFile');
+    btn.disabled = true;
+    showProgress(0, '上传');
+    setStatus('正在上传到本机下载服务…');
+
+    // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) setProgress(e.loaded / e.total, '上传');
+    };
+    xhr.onload = function () {
+      btn.disabled = false;
+      hideProgress();
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+      if (xhr.status >= 200 && xhr.status < 300 && data && data.url) {
+        showSaveLink(data.url, data.name || filename, data.size || blob.size);
+      } else {
+        setStatus('生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)), true);
+      }
+    };
+    xhr.onerror = function () {
+      btn.disabled = false;
+      hideProgress();
+      setStatus('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi', true);
+    };
+    xhr.send(blob);
+  }
+
+  function showSaveLink(url, name, size) {
+    var link = $('saveLink');
+    link.href = url;
+    // 同源链接：非 iOS 平台由此拿到文件名；iOS 主要靠服务端的 Content-Disposition
+    link.setAttribute('download', name);
+    link.hidden = false;
+    $('saveHint').textContent = '点上方链接保存：' + name + '（' + fmtSize(size) + '）。' +
+      'iOS 下载完成后去「文件」App 查看；若点了没反应，长按链接选择「下载链接文件」。';
+    setStatus('下载链接已生成：' + name);
+  }
+
+  /** 用 <a download> 触发下载；返回值只代表"已挂接"，不保证浏览器真的下载 */
+  function downloadViaAnchor(url, filename) {
+    try {
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   async function shareOrDownload() {
@@ -1591,11 +1684,18 @@
     var size = state.mergedBlob ? state.mergedBlob.size : 0;
     var isIOS = isIOSDevice();
 
+    // 下载服务可用时优先走它：直链下载在 iOS 上最稳，且不必把整包读进内存
+    if (state.serverReady) {
+      uploadForDownload();
+      return;
+    }
+
     // iOS + 大文件：系统分享要把整包读进内存（fetch → File），容易触发重载；
     // 直接交给系统播放器（流式读取），由用户在播放器里分享/存储
     if (isIOS && size > 80 * 1024 * 1024) {
       window.open(url, '_blank');
-      setStatus('文件较大，已交给系统播放器打开（可用播放器的分享 / 存储功能）');
+      setStatus('文件较大，已交给系统播放器打开（可用播放器的分享 / 存储功能）' +
+        '；要保存到「文件」App，请在电脑上跑 node tools/serve.js 后用「生成保存链接」', true);
       return;
     }
 
@@ -1619,20 +1719,19 @@
       // 分享不可用则继续走下载/打开
     }
 
-    // iOS Safari 对 blob URL 的 download 属性支持不可靠，改为新窗口打开，
-    // 由系统播放器接管（用户可用其分享/存储功能）
+    // iOS 13+ 对同源 blob URL 的 download 支持可用（失败时静默），
+    // 因此先试下载，实在不行才退回播放器 —— 播放器没有保存入口，只能作为兜底
     if (isIOS) {
+      if (downloadViaAnchor(url, filename)) {
+        setStatus('已触发下载：' + filename + '。若没有弹出保存，请用「生成保存链接」或长按链接下载');
+        return;
+      }
       window.open(url, '_blank');
-      setStatus('已在新窗口打开，可通过系统播放器分享或存储');
+      setStatus('已在新窗口打开：系统播放器无法直接保存，建议在电脑上跑 node tools/serve.js 后用「生成保存链接」', true);
       return;
     }
 
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    downloadViaAnchor(url, filename);
     setStatus('已触发下载：' + filename);
   }
 
@@ -1709,6 +1808,7 @@
 
     $('btnRecord').addEventListener('click', toggleRecord);
     $('btnShare').addEventListener('click', shareOrDownload);
+    $('btnSaveFile').addEventListener('click', uploadForDownload);
     $('btnPlayResult').addEventListener('click', playResult);
     $('btnCancel').addEventListener('click', cancelMerge);
 
@@ -1814,6 +1914,9 @@
       setFormat('mp3');
       renderList();
       setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并为 MP3」');
+
+      // 探测局域网下载服务（tools/serve.js）：可用才显示「生成保存链接」
+      probeDownloadServer();
 
       // 页脚版本号：取核心层的单一权威值（作者与链接在模板中静态声明）
       $('appVersion').textContent = 'v' + AudioCore.APP_VERSION;

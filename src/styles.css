@@ -161,6 +161,18 @@ header.app-header .header-links a:hover { text-decoration: underline; }
 #btnImport { letter-spacing: 0.5px; }
 #btnShare { flex: 1; }
 
+/* 保存区：<a> 作为按钮使用，去掉下划线；链接生成后整行铺满便于点击 */
+#saveBox { margin-top: 12px; }
+a.btn { text-decoration: none; }
+#saveLink {
+  display: flex;
+  width: 100%;
+  margin-top: 10px;
+  box-sizing: border-box;
+  text-align: center;
+}
+#saveLink[hidden] { display: none; }
+
 .btn-row {
   display: flex;
   gap: 12px;
