@@ -1136,7 +1136,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.4.1';
+  var APP_VERSION = '0.4.2';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -1625,6 +1625,34 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   /**
+   * 把多声道 Int16 采样交织成 WAV 数据块，返回**独立拷贝**。
+   *
+   * 为什么必须返回拷贝而不是视图：流式合并时调用方会复用同一块 scratch 缓冲，
+   * 若返回 subarray 视图，所有已排队的数据块都会指向同一块内存，最终文件里
+   * 每一块都是"最后一次写入的内容"——表现为整段音频反复重复同一小段
+   * （V0.4.2 修的正是这个问题；MP3 路径因为编码器每次返回新数组而没有该问题）。
+   *
+   * @param {Int16Array[]} channels 各声道采样（长度需 >= frames）
+   * @param {number} numChannels 声道数
+   * @param {number} frames 本次写出的帧数
+   * @param {Uint8Array} [scratch] 可复用的临时缓冲（长度需 >= frames*numChannels*2）
+   * @returns {Uint8Array} 长度为 frames*numChannels*2 的新数组
+   */
+  function interleaveInt16WavChunk(channels, numChannels, frames, scratch) {
+    var need = frames * numChannels * 2;
+    var bytes = (scratch && scratch.byteLength >= need) ? scratch : new Uint8Array(need);
+    var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    var off = 0;
+    for (var n = 0; n < frames; n++) {
+      for (var c = 0; c < numChannels; c++) {
+        view.setInt16(off, channels[c][n], true);
+        off += 2;
+      }
+    }
+    return bytes.slice(0, need);
+  }
+
+  /**
    * 将 PCM 编码为 WAV 字节流。
    * @param {Object} pcm
    * @param {number} [bitDepth=16] 8 / 16 / 24 / 32
@@ -1998,6 +2026,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     pickTargetRate: pickTargetRate,
     encodeWav: encodeWav,
     buildWavHeader: buildWavHeader,
+    interleaveInt16WavChunk: interleaveInt16WavChunk,
     conformedFrameCount: conformedFrameCount,
     createSegmentConverter: createSegmentConverter,
     segmentPeakAfterFade: segmentPeakAfterFade,
@@ -3215,25 +3244,21 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         enc = new window.lamejs.Mp3Encoder(plan.targetChannels, plan.targetSampleRate, state.bitrate);
       }
 
-      // 复用缓冲：Int16 每声道一块；WAV 还需一块交织字节缓冲
+      // 复用缓冲：Int16 每声道一块；WAV 另有一块交织字节缓冲（仅作 scratch，不直接写出）
       var int16Chs = [];
       for (var c = 0; c < plan.targetChannels; c++) int16Chs.push(new Int16Array(MERGE_CHUNK_FRAMES));
-      var wavBytes = null, wavView = null;
+      var wavScratch = null;
       if (state.format === 'wav') {
-        wavBytes = new Uint8Array(MERGE_CHUNK_FRAMES * plan.targetChannels * 2);
-        wavView = new DataView(wavBytes.buffer);
+        wavScratch = new Uint8Array(MERGE_CHUNK_FRAMES * plan.targetChannels * 2);
       }
 
       function writeWindow(frames) {
         if (state.format === 'wav') {
-          var off = 0;
-          for (var n = 0; n < frames; n++) {
-            for (var ch = 0; ch < plan.targetChannels; ch++) {
-              wavView.setInt16(off, int16Chs[ch][n], true);
-              off += 2;
-            }
-          }
-          return write(wavBytes.subarray(0, frames * plan.targetChannels * 2));
+          // 核心层负责交织并返回独立拷贝；直接 write(scratch.subarray()) 会让所有
+          // 数据块指向同一块内存，最终整段音频反复重复同一小段
+          return write(AudioCore.interleaveInt16WavChunk(
+            int16Chs, plan.targetChannels, frames, wavScratch
+          ));
         }
         var left = int16Chs[0].subarray(0, frames);
         var right = plan.targetChannels > 1 ? int16Chs[1].subarray(0, frames) : null;
@@ -3592,9 +3617,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       ' · 时长 ' + fmtTime(meta.durationSec) +
       ' · 大小 ' + fmtSize(blob.size);
     $('resultBox').hidden = false;
-    // 新结果生成后，上一轮的保存链接已失效（服务端文件仍是旧的）
+    // 新结果生成后，上一轮的保存链接已失效（服务端文件仍是旧的，blob URL 指向旧结果）
     $('saveLink').hidden = true;
     $('saveHint').textContent = '';
+    $('btnSaveFile').hidden = false;   // 复位：iOS 兜底时可能被临时隐藏过
     $('saveBox').hidden = !state.serverReady;
     var big = blob.size > 60 * 1024 * 1024;
     setStatus('合并完成，可试听、分享或下载' +
@@ -3669,6 +3695,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     // 同源链接：非 iOS 平台由此拿到文件名；iOS 主要靠服务端的 Content-Disposition
     link.setAttribute('download', name);
     link.hidden = false;
+    /* 没有本地下载服务时，这里的 url 是内存 blob URL（iOS 可靠长按「下载链接文件」，
+     * 也可能被直接下载）。此时「生成保存链接」按钮无意义（点了必然失败），隐藏掉。 */
+    $('btnSaveFile').hidden = !state.serverReady;
+    $('saveBox').hidden = false;
     $('saveHint').textContent = '点上方链接保存：' + name + '（' + fmtSize(size) + '）。' +
       'iOS 下载完成后去「文件」App 查看；若点了没反应，长按链接选择「下载链接文件」。';
     setStatus('下载链接已生成：' + name);
@@ -3698,55 +3728,63 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var size = state.mergedBlob ? state.mergedBlob.size : 0;
     var isIOS = isIOSDevice();
 
-    // 下载服务可用时优先走它：直链下载在 iOS 上最稳，且不必把整包读进内存
+    // 1) 本地下载服务可用时优先：直链下载在 iOS 上最稳，且不必把整包读进内存
     if (state.serverReady) {
       uploadForDownload();
       return;
     }
 
-    // iOS + 大文件：系统分享要把整包读进内存（fetch → File），容易触发重载；
-    // 直接交给系统播放器（流式读取），由用户在播放器里分享/存储
-    if (isIOS && size > 80 * 1024 * 1024) {
-      window.open(url, '_blank');
-      setStatus('文件较大，已交给系统播放器打开（可用播放器的分享 / 存储功能）' +
-        '；要保存到「文件」App，请在电脑上跑 node tools/serve.js 后用「生成保存链接」', true);
+    /* 2) 系统分享优先 —— 这是 iOS 上不依赖电脑的唯一保存通道
+     *    （分享面板 → 存储到文件）。
+     *
+     *    V0.4.1 及之前这里有个"体积 > 80MB 就直接 window.open 交给播放器"的分支，
+     *    结果是 40 分钟左右的 WAV（约 400MB）根本进不了分享面板，用户只能看到
+     *    全屏播放器（而播放器没有保存入口）。现已移除该分支：无论大小先试分享。
+     *
+     *    另外不要用 navigator.canShare 作为门槛：部分 Safari 版本对 audio/* 文件
+     *    返回 false，但实际 share 可正常工作，用 try/catch 实测更准。
+     */
+    if (navigator.share && state.mergedBlob) {
+      try {
+        /* 直接用已有的 mergedBlob 构造 File，不再 fetch(blobURL)：
+         * 那条路会把整个结果在内存里再物化一份。OPFS 落盘的 File 没有 MIME type，
+         * 必须包一层补上，否则部分系统的 share 会拒绝。 */
+        var src = state.mergedBlob;
+        var file = (src instanceof File && src.type)
+          ? src
+          : new File([src], filename, { type: mime });
+        await navigator.share({ files: [file], title: '合并录音', text: filename });
+        setStatus('已打开系统分享面板：选「存储到文件」即可保存到「文件」App');
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') { setStatus('已取消分享'); return; }
+        // 不支持 / 文件过大 / 权限被拒 → 继续降级，但不把错误直接抛给用户
+      }
+    }
+
+    // 3) <a download>：iOS 13+ 对同源 blob URL 有效，失败时通常静默无反应
+    var anchorOk = downloadViaAnchor(url, filename);
+    if (anchorOk && !isIOS) {
+      setStatus('已触发下载：' + filename);
       return;
     }
 
-    // 优先走系统分享（Android Chrome / iOS 15+ Safari 支持分享文件）
-    try {
-      /* 直接用已有的 mergedBlob 构造 File，不再 fetch(blobURL) → resp.blob()：
-       * 那条路会把整个结果在内存里再物化一份（大文件下白吃一份内存，正是
-       * V0.3.4 在 iOS 上修过的那类问题）。注意 OPFS 落盘的 File 没有 MIME
-       * type（getFile() 返回 type 为空），必须包一层补上，否则部分系统的
-       * canShare/share 会拒绝；内存回落与 M4A 路径的 Blob 自带 type。 */
-      var src = state.mergedBlob;
-      var file = (src instanceof File && src.type)
-        ? src
-        : new File([src], filename, { type: mime });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: '合并录音' });
-        return;
-      }
-    } catch (e) {
-      if (e && e.name === 'AbortError') return; // 用户取消分享
-      // 分享不可用则继续走下载/打开
-    }
-
-    // iOS 13+ 对同源 blob URL 的 download 支持可用（失败时静默），
-    // 因此先试下载，实在不行才退回播放器 —— 播放器没有保存入口，只能作为兜底
+    // 4) iOS 兜底：给出可操作路径，不再自动跳播放器
     if (isIOS) {
-      if (downloadViaAnchor(url, filename)) {
-        setStatus('已触发下载：' + filename + '。若没有弹出保存，请用「生成保存链接」或长按链接下载');
-        return;
-      }
-      window.open(url, '_blank');
-      setStatus('已在新窗口打开：系统播放器无法直接保存，建议在电脑上跑 node tools/serve.js 后用「生成保存链接」', true);
+      showSaveLink(url, filename, size);
+      $('saveHint').textContent = 'iOS 未能直接保存「' + filename + '」（' + fmtSize(size) + '）。' +
+        '请按顺序试：① 长按上面的链接 →「下载链接文件」；' +
+        '② 回到结果页用「分享」→ 系统分享面板里选「存储到文件」；' +
+        (size > 120 * 1024 * 1024
+          ? '③ 文件偏大（' + fmtSize(size) + '），改选 MP3 输出体积约为 1/10，分享成功率更高；'
+          : '③ ') +
+        '④ 或在电脑上运行 node tools/serve.js，用「生成保存链接」走直链下载。';
+      setStatus('iOS 无法直接保存，已列出手动保存步骤，请看下方提示', true);
       return;
     }
 
-    downloadViaAnchor(url, filename);
-    setStatus('已触发下载：' + filename);
+    if (anchorOk) { setStatus('已触发下载：' + filename); return; }
+    setStatus('当前浏览器不支持自动下载，请改用 Chrome / Edge，或右键播放器另存', true);
   }
 
   /* ---------------- 事件绑定 ---------------- */

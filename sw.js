@@ -7,7 +7,7 @@
  * 自动删除旧版本缓存，保证 PWA 用户能收到新构建（修复"发了新版却
  * 一直拿到旧文件"的问题）。
  */
-var CACHE = 'audio-merge-lab-v0.4.1';
+var CACHE = 'audio-merge-lab-v0.4.2';
 var ASSETS = [
   './',
   './index.html',
