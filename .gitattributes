@@ -1,0 +1,23 @@
+# 统一换行符，避免跨平台克隆后脚本失效或产生整文件 diff
+* text=auto
+
+# Windows 批处理必须 CRLF：cmd 在部分场景下用 LF 会解析错 if(...) 多行块
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 其余文本统一 LF
+*.js    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# 二进制资源不做换行转换
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.wasm  binary
