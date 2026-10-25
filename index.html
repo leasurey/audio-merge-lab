@@ -3753,6 +3753,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         var file = (src instanceof File && src.type)
           ? src
           : new File([src], filename, { type: mime });
+        // 大文件时原生面板要先把数据交出去，可能等几秒；没有提示容易被当成卡死
+        setStatus('正在打开系统分享面板…' + (size > 60 * 1024 * 1024 ? '（文件较大，需等待几秒）' : ''));
         await navigator.share({ files: [file], title: '合并录音', text: filename });
         setStatus('已打开系统分享面板：选「存储到文件」即可保存到「文件」App');
         return;
