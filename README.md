@@ -6,7 +6,7 @@
 
 导入或录下多段音频，按顺序合并为一个 WAV / MP3 / M4A —— 全程在你的设备本地完成，数据不经过任何服务器。
 
-[![Version](https://img.shields.io/badge/version-0.4.1-4f8cff)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.2-4f8cff)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web%20·%20iOS%20·%20Android-a371f7)](#-兼容性)
 [![Privacy](https://img.shields.io/badge/隐私-纯本地不上传-ff6b6b)](#-已知限制)
@@ -123,13 +123,17 @@ node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
 ## ❓ 常见问题
 
 <details>
-<summary><b>iOS 上点「分享 / 下载」只会打开播放器，存不下来</b></summary>
+<summary><b>iOS 上点「分享 / 下载」不弹分享面板，直接跳到全屏播放器</b></summary>
 
-这是 iOS 的限制：`window.open(blobURL)` 会把音频交给系统播放器，而**播放器没有保存入口**；
-`a[download]` 在 iOS 各版本行为也不稳定。解决办法：电脑上跑 `node tools/serve.js`，
-手机用 Safari 打开它打印的局域网地址，结果区会出现「💾 生成保存链接」，
-点链接即可存到「文件」App（若点了没反应，长按链接选「下载链接文件」）。
-不想折腾时，用「分享」按钮里的**系统分享菜单**也可以选「存储到文件」（大文件有内存压力）。
+V0.4.2 之前有一个「体积 > 80MB 就直接交给播放器」的提前返回，而 40 分钟左右的 WAV 约 400MB，
+必然命中——于是 `navigator.share` 根本没机会执行。现在已删除该分支，**无论文件多大都先尝试
+系统分享**（分享面板 → 「存储到文件」是 iOS 上不依赖电脑的唯一保存通道）。
+
+若分享面板仍然没弹出（例如旧版 Safari 不支持分享文件，或文件大到分享失败），结果区会给出
+可点/可长按的保存链接与分步提示。最省事的做法仍是：
+
+1. 改用 **MP3** 输出（体积约为 WAV 的 1/10，分享成功率高得多）
+2. 或在电脑上跑 `node tools/serve.js`，手机用 Safari 打开它打印的局域网地址，点「💾 生成保存链接」
 </details>
 
 <details>
@@ -194,7 +198,7 @@ node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
 ├─ index.template.html      页面骨架（构建占位符）
 ├─ tools/build.js           构建：内联单文件 + PWA 资源 + 图标生成
 ├─ tools/serve.js           可选的局域网自托管服务：静态页 + 上传/下载直链（npm run serve）
-├─ test/                    48 项核心单测 + 9 项 MP3 功能测试 + 24 项下载服务端到端测试 + Python 交叉校验
+├─ test/                    51 项核心单测 + 9 项 MP3 功能测试 + 24 项下载服务端到端测试 + Python 交叉校验
 ├─ compat.html / guide.html / convert.html   自检 / 指南 / 转换页
 ├─ capacitor.config.json    Capacitor 打包配置（webDir → dist）
 └─ CHANGELOG.md · LICENSE · THIRD-PARTY-NOTICES.md · 使用说明.md
@@ -215,7 +219,7 @@ node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
 
 ```bash
 node tools/build.js                                  # 构建（单文件 HTML + PWA + 图标）
-npm test                                             # 48 + 9 + 24 项测试
+npm test                                             # 51 + 9 + 24 项测试
 node tools/serve.js                                  # 可选：启动局域网下载服务（默认 8010）
 python test/verify_wav.py                            # Python wave 模块交叉校验 WAV 产物
 ```

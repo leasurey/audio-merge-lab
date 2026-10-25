@@ -726,4 +726,68 @@ test('planMerge: 全空剪切区间抛错（与全空片段一致）', () => {
     /所有片段均为空/);
 });
 
+test('interleaveInt16WavChunk: 复用 scratch 时返回独立拷贝（防"整段重复"回归）', () => {
+  const scratch = new Uint8Array(4 * 2 * 2); // 4 帧 × 2 声道 × 2 字节
+  const chA = [new Int16Array([1, 2, 3, 4]), new Int16Array([-1, -2, -3, -4])];
+  const first = Core.interleaveInt16WavChunk(chA, 2, 4, scratch);
+  const chB = [new Int16Array([100, 200, 300, 400]), new Int16Array([-100, -200, -300, -400])];
+  const second = Core.interleaveInt16WavChunk(chB, 2, 4, scratch);
+
+  // 核心断言：第二次写入不得污染第一次的结果（这正是 V0.4.1 的 bug）
+  assert.notStrictEqual(first.buffer, scratch.buffer, '返回值不能是 scratch 的视图');
+  assert.notStrictEqual(first, second);
+  const fv = new DataView(first.buffer, first.byteOffset, first.byteLength);
+  const sv = new DataView(second.buffer, second.byteOffset, second.byteLength);
+  assert.strictEqual(fv.getInt16(0, true), 1);
+  assert.strictEqual(fv.getInt16(2, true), -1);
+  assert.strictEqual(sv.getInt16(0, true), 100);
+  assert.notDeepStrictEqual(Array.from(first), Array.from(second));
+});
+
+test('interleaveInt16WavChunk: 小端交织顺序与字节长度正确', () => {
+  const ch = [new Int16Array([0x1234, 0, 0]), new Int16Array([0x5678, 0, 0])];
+  const out = Core.interleaveInt16WavChunk(ch, 2, 3);
+  assert.strictEqual(out.length, 3 * 2 * 2);
+  // 第 0 帧：左 0x1234 → 34 12；右 0x5678 → 78 56（小端）
+  assert.deepStrictEqual(Array.from(out.slice(0, 4)), [0x34, 0x12, 0x78, 0x56]);
+  assert.deepStrictEqual(Array.from(out.slice(4, 8)), [0, 0, 0, 0]);
+});
+
+test('流式分块写出 == 一次性 encodeWav（WAV 内容逐字节一致）', () => {
+  const rate = 44100;
+  const frames = 1000;
+  const L = new Float32Array(frames);
+  const R = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    L[i] = Math.sin(i / 20) * 0.5;
+    R[i] = Math.cos(i / 30) * 0.4;
+  }
+  const pcm = { sampleRate: rate, channels: [L, R] };
+  const whole = Core.encodeWav(pcm, 16);
+
+  // 模拟 app.js 的流式路径：复用同一块 scratch 逐块交织
+  const chunkFrames = 128;
+  const scratch = new Uint8Array(chunkFrames * 2 * 2);
+  const chs = [new Int16Array(chunkFrames), new Int16Array(chunkFrames)];
+  const parts = [Core.buildWavHeader(frames, rate, 2, 16)];
+  for (let done = 0; done < frames; done += chunkFrames) {
+    const n = Math.min(chunkFrames, frames - done);
+    for (let c = 0; c < 2; c++) {
+      for (let i = 0; i < n; i++) {
+        // 与 encodeWav 相同的定点化：Int16Array 直接存浮点会被截断成 0
+        const v = pcm.channels[c][done + i];
+        chs[c][i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      }
+    }
+    parts.push(Core.interleaveInt16WavChunk(chs, 2, n, scratch));
+  }
+
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  assert.strictEqual(total, whole.length, '流式总字节数应等于一次性编码');
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { merged.set(p, off); off += p.length; }
+  assert.deepStrictEqual(Array.from(merged), Array.from(whole), '流式内容应与一次性编码逐字节一致');
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

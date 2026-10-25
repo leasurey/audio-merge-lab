@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.4.1';
+  var APP_VERSION = '0.4.2';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -516,6 +516,34 @@
   }
 
   /**
+   * 把多声道 Int16 采样交织成 WAV 数据块，返回**独立拷贝**。
+   *
+   * 为什么必须返回拷贝而不是视图：流式合并时调用方会复用同一块 scratch 缓冲，
+   * 若返回 subarray 视图，所有已排队的数据块都会指向同一块内存，最终文件里
+   * 每一块都是"最后一次写入的内容"——表现为整段音频反复重复同一小段
+   * （V0.4.2 修的正是这个问题；MP3 路径因为编码器每次返回新数组而没有该问题）。
+   *
+   * @param {Int16Array[]} channels 各声道采样（长度需 >= frames）
+   * @param {number} numChannels 声道数
+   * @param {number} frames 本次写出的帧数
+   * @param {Uint8Array} [scratch] 可复用的临时缓冲（长度需 >= frames*numChannels*2）
+   * @returns {Uint8Array} 长度为 frames*numChannels*2 的新数组
+   */
+  function interleaveInt16WavChunk(channels, numChannels, frames, scratch) {
+    var need = frames * numChannels * 2;
+    var bytes = (scratch && scratch.byteLength >= need) ? scratch : new Uint8Array(need);
+    var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    var off = 0;
+    for (var n = 0; n < frames; n++) {
+      for (var c = 0; c < numChannels; c++) {
+        view.setInt16(off, channels[c][n], true);
+        off += 2;
+      }
+    }
+    return bytes.slice(0, need);
+  }
+
+  /**
    * 将 PCM 编码为 WAV 字节流。
    * @param {Object} pcm
    * @param {number} [bitDepth=16] 8 / 16 / 24 / 32
@@ -889,6 +917,7 @@
     pickTargetRate: pickTargetRate,
     encodeWav: encodeWav,
     buildWavHeader: buildWavHeader,
+    interleaveInt16WavChunk: interleaveInt16WavChunk,
     conformedFrameCount: conformedFrameCount,
     createSegmentConverter: createSegmentConverter,
     segmentPeakAfterFade: segmentPeakAfterFade,
