@@ -3,10 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
+<!-- iOS 状态栏颜色随系统明暗模式切换（HIG: 提供 light / dark 两套） -->
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="description" content="纯本地音频合并工具：导入或录音频，合并为 WAV / MP3 / M4A。iOS / Android / Web 通用。">
 <title>录音合并器 · Audio Merge Lab</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -106,7 +108,18 @@
     return false; // 不吞掉错误，控制台仍可见
   };
 
-  // 2) 超时未就绪：DOM 可用后检查，主应用应在此之前替换为「就绪」状态
+  // 2) 未处理的 Promise rejection：主应用是 async 初始化，旧实现只监听
+  //    window.onerror，异步失败时会白屏且不弹任何提示（旧内核无此事件则跳过）
+  try {
+    window.addEventListener('unhandledrejection', function (ev) {
+      if (booted) return;
+      var r = ev && ev.reason;
+      var msg = r && r.message ? r.message : (r || '未知错误');
+      show('异步初始化失败：' + String(msg).slice(0, 120));
+    });
+  } catch (e) { /* 旧内核不支持该事件则忽略 */ }
+
+  // 3) 超时未就绪：DOM 可用后检查，主应用应在此之前替换为「就绪」状态
   function check() {
     if (booted || shown) return;
     var s = document.getElementById('status');
@@ -126,185 +139,314 @@
 
 </script>
 <style>
-/* 录音合并器 — 深色主题，移动端优先 */
+/* 录音合并器 — iOS 风格界面（分组表 / 语义色 / 连续曲率圆角）
+ *
+ * 设计依据（Apple 公开文档，2026-11-06 核对）：
+ *  - HIG · Color：iOS 定义 system / grouped 两组动态背景色，前景色按
+ *    label / secondaryLabel / tertiaryLabel / separator 等「语义」划分；官方明确
+ *    「避免硬编码系统色值，文档中的数值仅供设计参考」，并要求同时提供明暗两套。
+ *    Web 没有对应的系统色 API，因此下面用语义命名的 CSS 变量给出 light / dark
+ *    两套参考值，绝不冒充系统动态色。
+ *  - CALayer.cornerCurve（iOS 13+）公开了 kCACornerCurveContinuous「连续曲率圆角」，
+ *    系统控件使用这种圆角；HIG **未公开**统一的圆角半径数值。
+ *    CSS 没有原生连续曲率，以下用 border-radius 近似，并把圆角收敛成一组
+ *    层级化 token（同一层级保持一致），不宣称这些数字是 Apple 规定值。
+ *  - 最小点击区 44×44pt、8pt 间距网格、SF/PingFang 系统字体栈。
+ */
 :root {
-  --bg: #0f1115;
-  --card: #171b22;
-  --card-2: #1d222b;
-  --border: #2a313c;
-  --text: #e8ebf0;
-  --text-dim: #9aa4b2;
-  --accent: #4f8cff;
-  --accent-press: #3a6fd8;
-  --danger: #e5534b;
-  --ok: #3fb27f;
-  --rec: #e5534b;
+  /* 让 UA 绘制的原生控件（select 下拉弹层、滚动条、input）跟随明暗配色。
+     缺失时 Windows Chromium 会用浅色系统色画 option 列表，而 option 继承
+     了深色模式的白色文字 → 白底白字，码率下拉看起来「整块同一个颜色」。*/
+  color-scheme: light;
+
+  /* 圆角 token：Web 对「连续曲率」的近似，按层级统一 */
+  --r-card: 14px;
+  --r-control: 10px;
+  --r-segment: 8px;
+  --r-sheet: 16px;
+  --r-pill: 999px;
+
+  /* 8pt 间距网格 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+
+  /* HIG 动态语义色 · Light（设计参考值） */
+  --bg: #f2f2f7;              /* systemGroupedBackground */
+  --card: #ffffff;            /* secondarySystemGroupedBackground */
+  --fill: rgba(120, 120, 128, 0.12);  /* systemFill */
+  --fill-strong: rgba(120, 120, 128, 0.20);
+  --separator: rgba(60, 60, 67, 0.12);
+  --label: #000000;
+  /* 浅色模式的语义色取「可读变体」：原 systemRed/Green 与 0.30~0.60 透明度
+     的次级标签在白底上对比度不足（按 WCAG 相对亮度公式估算 < 4.5:1）。
+     HIG 明确文档色值仅供参考，故按可读性加深，不冒充系统动态色。 */
+  --label-2: rgba(60, 60, 67, 0.72);
+  --label-3: rgba(60, 60, 67, 0.62);
+  --tint: #007aff;            /* systemBlue */
+  --tint-press: #0062cc;
+  --tint-soft: rgba(0, 122, 255, 0.10);
+  --danger: #d70015;
+  --ok: #1a7f3c;
+  --warn: #8a4300;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%233c3c43' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+  --bar-bg: rgba(249, 249, 249, 0.88);
+  --shadow-seg: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #000000;
+    --card: #1c1c1e;
+    --fill: rgba(118, 118, 128, 0.24);
+    --fill-strong: rgba(118, 118, 128, 0.36);
+    --separator: rgba(84, 84, 88, 0.60);
+    --label: #ffffff;
+    --label-2: rgba(235, 235, 245, 0.60);
+    /* 0.30 在纯黑底上约 2.1:1，页脚 12px 几乎不可读；提到 0.50 → 约 4.5:1 */
+    --label-3: rgba(235, 235, 245, 0.50);
+    --tint: #0a84ff;
+    --tint-press: #409cff;
+    --tint-soft: rgba(10, 132, 255, 0.16);
+    --danger: #ff453a;
+    --ok: #30d158;
+    --warn: #ffb340;
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23ebebf5' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+    --bar-bg: rgba(28, 28, 30, 0.88);
+    --shadow-seg: 0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* UA 的 [hidden]{display:none} 会被作者表的 .btn / .opt-row 等 display 覆盖，
+   必须显式兜底，否则位率行、保存按钮等「隐藏」实际仍会渲染。 */
+[hidden] { display: none !important; }
 
 * { box-sizing: border-box; }
-
-button, .btn { user-select: none; -webkit-user-select: none; }
-
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 html, body {
   margin: 0;
   padding: 0;
   background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  font-size: 15px;
-  line-height: 1.55;
+  color: var(--label);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.45;
   -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--tint);
+  outline-offset: 2px;
 }
 
 .wrap {
   max-width: 720px;
   margin: 0 auto;
-  padding: 16px 14px calc(88px + env(safe-area-inset-bottom));
+  padding: 0 var(--sp-4) calc(96px + env(safe-area-inset-bottom));
 }
 
-/* ---------- 头部 ---------- */
+/* ---------- 应用头部：标识 → 功能 → 隐私承诺 → 次级入口 ---------- */
 header.app-header {
-  padding: calc(10px + env(safe-area-inset-top)) 2px 18px;
+  padding: calc(var(--sp-5) + env(safe-area-inset-top)) var(--sp-1) var(--sp-5);
 }
-header.app-header h1 {
-  margin: 0;
-  font-size: 22px;
-  letter-spacing: 0.5px;
+.app-identity {
   display: flex;
   align-items: center;
+  gap: var(--sp-3);
 }
-header.app-header h1 .dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
-  margin-right: 8px;
-  flex-shrink: 0;
+.app-mark {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: var(--r-control);
+  background: var(--tint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
 }
-header.app-header p {
-  margin: 6px 0 0;
-  color: var(--text-dim);
+.app-mark i {
+  display: block;
+  width: 3px;
+  border-radius: var(--r-pill);
+  background: #fff;
+}
+.app-mark i:nth-child(1) { height: 12px; opacity: 0.85; }
+.app-mark i:nth-child(2) { height: 22px; }
+.app-mark i:nth-child(3) { height: 15px; opacity: 0.85; }
+.app-identity-text { min-width: 0; }
+header.app-header h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+p.app-subtitle {
+  margin: 2px 0 0;
   font-size: 13px;
-  line-height: 1.6;
+  color: var(--label-3);
+  letter-spacing: 0.2px;
 }
-header.app-header .header-links { margin-top: 8px; }
-header.app-header .header-links a {
-  color: var(--accent);
-  font-size: 13px;
-  text-decoration: none;
-}
-header.app-header .header-links a:hover { text-decoration: underline; }
-
-/* ---------- 卡片 ---------- */
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 16px;
-  margin-bottom: 16px;
-}
-.card h2 {
-  margin: 0 0 12px;
+p.app-intro {
+  margin: var(--sp-3) 0 0;
   font-size: 15px;
-  color: var(--text);
+  color: var(--label-2);
+  line-height: 1.5;
+}
+.privacy-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
 }
-.card h2 .count {
+.privacy-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border-radius: var(--r-pill);
+  background: rgba(52, 199, 89, 0.14);
+  color: var(--ok);
   font-size: 12px;
-  color: var(--text-dim);
-  font-weight: normal;
+  font-weight: 600;
+}
+.header-link {
+  color: var(--tint);
+  font-size: 14px;
+  text-decoration: none;
+}
+.header-link:hover { text-decoration: underline; }
+header.app-header .header-links a { color: var(--tint); text-decoration: none; }
+
+/* ---------- 分组卡片 ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: var(--r-card);
+  margin-bottom: var(--sp-5);
+  overflow: hidden;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+}
+.step-badge {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-pill);
+  background: var(--tint-soft);
+  color: var(--tint);
+  font-size: 14px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+.step-badge-done { background: rgba(52, 199, 89, 0.16); color: var(--ok); }
+.card-head-text { flex: 1; min-width: 0; }
+.card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.2px;
+}
+p.card-desc {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--label-2);
+}
+.card .count {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
+}
+.card-body { padding: 0 var(--sp-4) var(--sp-4); }
+.card-body-flush { padding: 0; }
+.card-foot {
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--separator);
+}
+.card-result { border-color: var(--tint); }
+
 .hint {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: var(--text-dim);
-  line-height: 1.6;
+  margin: var(--sp-2) 0 0;
+  font-size: 13px;
+  color: var(--label-2);
+  line-height: 1.5;
 }
 
-/* ---------- 按钮 ---------- */
-/* display:inline-flex 显式声明：<label>（导入按钮）默认是 inline，
-   不声明的话在非 flex 容器里会塌缩；flex 容器中子元素会被 blockify，
-   两种宿主下都与 <button> 渲染一致 */
+/* ---------- 按钮：主操作填充 tint，次级操作用 systemFill ---------- */
+.btn, button, .btn {
+  font-family: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+}
 .btn {
   appearance: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
+  min-height: 44px;
   border: none;
-  border-radius: 12px;
-  padding: 12px 18px;
-  font-size: 15px;
+  border-radius: var(--r-control);
+  padding: 10px var(--sp-4);
+  font-size: 16px;
   font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
   cursor: pointer;
-  transition: transform 0.05s ease, background 0.15s ease, box-shadow 0.15s ease;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
-.btn:active { transform: scale(0.98); }
-.btn.primary { background: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-press); }
-.btn.ghost {
-  background: var(--card-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-.btn.ghost:hover { border-color: var(--accent); }
-.btn:disabled, .btn.disabled {
-  opacity: 0.45;
-  pointer-events: none;
-}
-.btn.recording {
-  background: var(--rec);
-  color: #fff;
-}
+.btn:active { opacity: 0.65; }
+.btn.primary { background: var(--tint); color: #fff; }
+.btn.primary:hover { background: var(--tint-press); }
+.btn.ghost { background: var(--fill); color: var(--tint); }
+.btn.ghost:hover { background: var(--fill-strong); }
 .btn.danger { background: var(--danger); color: #fff; }
-.btn.danger:hover { background: #c9463f; }
-.btn.tiny { padding: 6px 12px; font-size: 13px; }
-
-/* 大号按钮：导入 / 录音 / 合并 / 分享——主操作统一放大，点击区 ≥48px */
+.btn.danger:hover { opacity: 0.85; }
+.btn.recording { background: var(--danger); color: #fff; }
+.btn.tiny {
+  min-height: 32px;
+  padding: 6px var(--sp-3);
+  font-size: 13px;
+  border-radius: var(--r-segment);
+}
 .btn-lg {
-  padding: 15px 22px;
-  font-size: 16px;
-  border-radius: 14px;
   min-height: 50px;
+  padding: 13px var(--sp-5);
+  font-size: 16px;
+  border-radius: var(--r-control);
 }
-/* 合并按钮：底部固定栏里的唯一主操作，加强视觉权重 */
+.btn:disabled, .btn.disabled { opacity: 0.4; pointer-events: none; }
 .btn-merge {
-  min-width: 148px;
-  box-shadow: 0 4px 18px rgba(79, 140, 255, 0.35);
-  letter-spacing: 0.5px;
+  min-width: 132px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
 }
-.btn-merge:active { box-shadow: 0 2px 8px rgba(79, 140, 255, 0.3); }
-#btnImport { letter-spacing: 0.5px; }
+#btnImport { white-space: nowrap; }
 #btnShare { flex: 1; }
-
-/* 保存区：<a> 作为按钮使用，去掉下划线；链接生成后整行铺满便于点击 */
-#saveBox { margin-top: 12px; }
 a.btn { text-decoration: none; }
-#saveLink {
-  display: flex;
-  width: 100%;
-  margin-top: 10px;
-  box-sizing: border-box;
-  text-align: center;
-}
-#saveLink[hidden] { display: none; }
 
-.btn-row {
-  display: flex;
-  gap: 12px;
-}
+.btn-row { display: flex; gap: var(--sp-3); }
 .btn-row .btn { flex: 1; }
 
 /* file input 视觉隐藏：保留布局盒子（非 display:none），
@@ -320,434 +462,603 @@ a.btn { text-decoration: none; }
   white-space: nowrap;
   border: 0;
 }
-
-/* 兼容模式导入入口：部分国产内核的 accept 过滤有 bug，用不过滤的备用入口 */
 .alt-import {
   display: block;
-  margin-top: 10px;
-  font-size: 12px;
-  color: var(--text-dim);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  margin-top: var(--sp-3);
+  font-size: 13px;
+  color: var(--tint);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.alt-import:active { color: var(--accent); }
+.alt-import:active { opacity: 0.6; }
 
 /* ---------- 录音指示 ---------- */
 .rec-indicator {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  font-size: 13px;
-  color: var(--text-dim);
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
   min-height: 20px;
+  font-size: 14px;
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
 }
 .rec-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--rec);
+  width: 9px;
+  height: 9px;
+  border-radius: var(--r-pill);
+  background: var(--danger);
   animation: pulse 1s ease-in-out infinite;
 }
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
-}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
-/* ---------- 片段列表 ---------- */
-ul.seg-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
+/* ---------- 片段列表：把手 / 试听 / 信息 / 操作 四列对齐 ---------- */
+ul.seg-list { list-style: none; margin: 0; padding: 0; }
 ul.seg-list li.empty {
-  color: var(--text-dim);
-  font-size: 13px;
-  padding: 14px 4px;
+  padding: var(--sp-5) var(--sp-4);
   text-align: center;
+  font-size: 14px;
+  color: var(--label-2);
 }
 li.seg {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px;
-  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 24px 36px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--separator);
 }
-li.seg:last-child { border-bottom: none; }
-/* 拖动把手：替代原上下箭头，按住拖动调整顺序（pointer events） */
+li.seg:first-child { border-top: none; }
+li.seg.playing { background: var(--tint-soft); }
+li.seg.dragging { opacity: 0.5; }
+
 .seg-drag {
-  width: 26px;
-  height: 34px;
+  width: 24px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-dim);
+  color: var(--label-3);
   font-size: 16px;
   letter-spacing: -2px;
   cursor: grab;
-  flex-shrink: 0;
-  touch-action: none; /* 交给自己处理手势，避免触发页面滚动 */
-  border-radius: 8px;
+  border-radius: var(--r-segment);
+  touch-action: none;
   -webkit-tap-highlight-color: transparent;
 }
-.seg-drag:hover { color: var(--text); background: var(--card-2); }
+.seg-drag:hover { color: var(--tint); background: var(--fill); }
 .seg-drag:active { cursor: grabbing; }
-li.seg.dragging { opacity: 0.55; }
-li.seg.dragging .seg-drag { color: var(--accent); }
-.seg-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+li.seg.dragging .seg-drag { color: var(--tint); }
+
+.seg-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .seg-name {
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .seg-meta {
   font-size: 12px;
-  color: var(--text-dim);
-  margin-top: 2px;
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
 }
-/* 兜底解码结果存疑时的警示行（例如平台只解出几十毫秒噪声） */
 .seg-warn {
   font-size: 12px;
-  line-height: 1.45;
-  color: #f0d08a;
-  margin-top: 3px;
+  line-height: 1.4;
+  color: var(--warn);
+  margin-top: var(--sp-1);
 }
-.seg-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-  align-items: center;
-}
+.seg-actions { display: flex; gap: 6px; align-items: center; }
+
 .icon-btn {
   width: 36px;
   height: 36px;
-  border-radius: 9px;
-  border: 1px solid var(--border);
-  background: var(--card-2);
-  color: var(--text-dim);
+  flex: 0 0 36px;
+  border: none;
+  border-radius: var(--r-segment);
+  background: var(--fill);
+  color: var(--tint);
   font-size: 15px;
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   -webkit-tap-highlight-color: transparent;
 }
-.icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
-.icon-btn:disabled { opacity: 0.3; cursor: default; }
-.icon-btn.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
-.icon-btn.active { color: var(--accent); border-color: var(--accent); }
+.icon-btn:hover:not(:disabled) { background: var(--fill-strong); }
+.icon-btn:disabled { opacity: 0.35; cursor: default; }
+.icon-btn.danger { color: var(--danger); }
+.icon-btn.active { background: var(--tint); color: #fff; }
+li.seg.playing .seg-name { color: var(--tint); }
+li.seg.decoding .seg-name { color: var(--label-2); }
+li.seg.decoding .seg-meta { color: var(--tint); }
+li.seg.failed .seg-name, li.seg.failed .seg-meta { color: var(--danger); }
 
-/* ---------- 片段剪切面板 ---------- */
+/* ---------- 剪切面板：标签 / 滑杆 / 数值三列对齐 ---------- */
 .trim-panel {
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: var(--card-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--fill);
+  border-radius: var(--r-control);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 .trim-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 66px;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
 }
-.trim-label {
-  font-size: 12px;
-  color: var(--text-dim);
-  width: 28px;
-  flex-shrink: 0;
-}
-.trim-range { flex: 1.4; accent-color: var(--accent); height: 26px; min-width: 0; }
+.trim-label { font-size: 12px; color: var(--label-2); }
+.trim-range { width: 100%; height: 28px; accent-color: var(--tint); }
 .trim-num {
-  width: 68px;
-  flex-shrink: 0;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 13px;
-  padding: 6px 8px;
+  width: 66px;
+  min-height: 34px;
+  background: var(--card);
+  border: 1px solid var(--separator);
+  border-radius: var(--r-segment);
+  color: var(--label);
+  font-size: 14px;
+  padding: 6px;
   font-variant-numeric: tabular-nums;
 }
-.trim-num:focus { border-color: var(--accent); outline: none; }
+.trim-num:focus { border-color: var(--tint); outline: none; }
 .trim-times {
   font-size: 12px;
-  color: var(--accent);
+  color: var(--tint);
   font-variant-numeric: tabular-nums;
 }
-.trim-ops { display: flex; gap: 8px; }
+.trim-ops { display: flex; gap: var(--sp-2); }
+.trim-ops .btn { flex: 1; min-width: 0; }
 
-/* ---------- 选项 ---------- */
+/* ---------- 选项：标签列 / 控件列 / 数值列 ---------- */
+.opt-group { border-top: 1px solid var(--separator); }
 .opt-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 9px 0;
+  gap: var(--sp-3);
+  min-height: 54px;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--separator);
 }
-.opt-row label { flex: 1; font-size: 14px; }
+.opt-row .opt-label {
+  font-size: 15px;
+  color: var(--label);
+  line-height: 1.3;
+}
 .opt-row output {
-  font-size: 13px;
-  color: var(--accent);
-  min-width: 52px;
+  font-size: 14px;
+  color: var(--label-2);
+  min-width: 56px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 input[type="range"] {
-  flex: 1.4;
-  accent-color: var(--accent);
+  width: 100%;
   height: 28px;
+  accent-color: var(--tint);
 }
 .checkbox-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-  font-size: 14px;
+  gap: var(--sp-3);
+  min-height: 52px;
+  font-size: 15px;
   cursor: pointer;
 }
 input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent);
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  accent-color: var(--tint);
 }
 
-/* ---------- 状态与结果 ---------- */
-#status {
-  font-size: 13px;
-  color: var(--text-dim);
-  padding: 10px 2px 14px;
-  min-height: 20px;
-  word-break: break-all;
-}
-#status.error { color: var(--danger); }
-
-#resultBox audio {
-  width: 100%;
-  margin: 4px 0 10px;
-}
-#resultMeta {
-  font-size: 13px;
-  color: var(--text-dim);
-  margin: 0 0 12px;
-}
-
-footer {
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 12px;
-  padding: 8px 0 24px;
-}
-footer .footer-line { display: block; }
-footer .footer-author { margin-top: 2px; }
-footer a {
-  color: var(--accent);
-  text-decoration: none;
-}
-footer a:hover { text-decoration: underline; }
-
-/* ---------- 输出格式选择 ---------- */
+/* UISegmentedControl 近似：灰底 + 选中白片 + 轻阴影 */
 .seg-control {
-  display: flex;
-  background: var(--card-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 3px;
-  gap: 3px;
+  grid-column: 2 / -1;
+  justify-self: end;
+  display: inline-flex;
+  background: var(--fill);
+  border-radius: var(--r-segment);
+  padding: 2px;
+  gap: 2px;
 }
 .seg-btn {
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--text-dim);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 14px;
-  border-radius: 8px;
+  color: var(--label);
+  font-size: 14px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 6px var(--sp-3);
+  border-radius: 7px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
-.seg-btn:hover { color: var(--text); }
-.seg-btn.active { background: var(--accent); color: #fff; }
+.seg-btn:hover { background: var(--fill-strong); }
+.seg-btn.active {
+  background: var(--card);
+  color: var(--label);
+  font-weight: 600;
+  box-shadow: var(--shadow-seg);
+}
 
 select {
   appearance: none;
   -webkit-appearance: none;
-  background: var(--card-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 13px;
-  padding: 8px 10px;
+  justify-self: end;
+  min-height: 36px;
+  min-width: 0;
+  max-width: 100%;
+  /* 用不透明的卡片色而非半透明 fill：深色模式下半透明背景叠在卡片上，
+     与原生 option 列表的绘制结果不一致，是「下拉与字同色」的直接诱因。*/
+  background-color: var(--card);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 8px;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-segment);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 15px;
+  padding: 6px 30px 6px var(--sp-3);
   cursor: pointer;
 }
-select:hover { border-color: var(--accent); }
-/* iOS Safari/WKWebView 聚焦字号 <16px 的下拉框会自动放大页面，
-   触屏设备上放大到 16px 防止缩放跳动（桌面指针设备不受影响） */
+select:hover { border-color: var(--tint); }
+select:disabled { opacity: 0.5; cursor: default; }
+/* option 由 UA 原生绘制，不会自动继承 select 的背景；必须显式给出
+   与文字成套的明暗配色，否则 Windows/Chromium 深色模式下白字落在浅底上。*/
+select option, select optgroup {
+  background-color: var(--card);
+  color: var(--label);
+}
+/* iOS Safari/WKWebView 聚焦字号 <16px 的下拉框会自动放大页面 */
 @media (pointer: coarse) {
   select { font-size: 16px; }
+  .trim-num { font-size: 16px; }
+  /* 触屏上 16px 的位率下拉在三列里会压住「MP3 位率」标签，
+     改为标签一行、下拉独占一行（与窄屏规则一致）。*/
+  .opt-row-select { grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); padding: var(--sp-3) 0; }
+  .opt-row-select .opt-label { grid-column: 1; }
+  .opt-row-select select { grid-column: 1; justify-self: stretch; width: 100%; }
 }
 
-/* ---------- 进度条 ---------- */
-#progressWrap { padding: 0 2px 12px; }
+/* ---------- 状态、进度、结果 ---------- */
+#status {
+  font-size: 14px;
+  color: var(--label-2);
+  padding: var(--sp-2) var(--sp-1) var(--sp-4);
+  min-height: 20px;
+  word-break: break-word;
+}
+#status.error { color: var(--danger); }
+
+#progressWrap { padding: 0 var(--sp-1) var(--sp-4); }
 .progress-track {
-  height: 8px;
-  background: var(--card-2);
-  border: 1px solid var(--border);
-  border-radius: 99px;
+  height: 6px;
+  background: var(--fill);
+  border-radius: var(--r-pill);
   overflow: hidden;
 }
 .progress-fill {
   height: 100%;
   width: 0%;
-  background: var(--accent);
-  border-radius: 99px;
+  background: var(--tint);
+  border-radius: var(--r-pill);
   transition: width 0.2s ease;
 }
 .progress-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
   font-size: 13px;
-  color: var(--text-dim);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
 }
 
-/* ---------- 片段试听 ---------- */
-.icon-btn.play:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
-li.seg.playing { background: var(--card-2); border-radius: 10px; }
-li.seg.playing .seg-name { color: var(--accent); }
+#resultBox audio { width: 100%; margin: var(--sp-1) 0 var(--sp-3); }
+#resultMeta {
+  font-size: 14px;
+  color: var(--label-2);
+  margin: 0 0 var(--sp-3);
+  font-variant-numeric: tabular-nums;
+}
+#saveBox { margin-top: var(--sp-3); }
+#saveLink {
+  display: flex;
+  width: 100%;
+  margin-top: var(--sp-2);
+  box-sizing: border-box;
+  text-align: center;
+}
+#saveLink[hidden] { display: none; }
 
-/* ---------- 片段状态（解码中 / 失败） ---------- */
-li.seg.decoding .seg-name { color: var(--text-dim); }
-li.seg.decoding .seg-meta { color: var(--accent); }
-li.seg.failed .seg-name { color: var(--danger); }
-li.seg.failed .seg-meta { color: var(--danger); }
-
-/* ---------- 底部操作栏 ---------- */
+/* ---------- 底部固定操作栏 ---------- */
 .action-bar {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 20;
-  background: rgba(15, 17, 21, 0.92);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  border-top: 1px solid var(--border);
-  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bar-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-top: 1px solid var(--separator);
+  padding: var(--sp-2) var(--sp-4) calc(var(--sp-2) + env(safe-area-inset-bottom));
 }
 .action-inner {
-  max-width: 692px;
+  max-width: 688px;
   margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 .action-summary {
-  font-size: 13px;
-  color: var(--text-dim);
+  font-size: 14px;
+  color: var(--label-2);
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
-.action-bar .btn { flex: 0 0 auto; min-width: 108px; }
+.action-bar .btn { flex: 0 0 auto; }
 
+/* ---------- 页脚 ---------- */
+footer {
+  text-align: center;
+  color: var(--label-3);
+  font-size: 12px;
+  padding: var(--sp-2) 0 var(--sp-6);
+}
+footer .footer-line { display: block; }
+footer .footer-author { margin-top: var(--sp-1); }
+footer a { color: var(--label-2); text-decoration: none; }
+footer a:hover { color: var(--tint); text-decoration: underline; }
+
+/* ---------- 响应式 ---------- */
 @media (min-width: 560px) {
   .btn-row .btn { flex: 0 0 auto; min-width: 180px; }
+  #btnShare { min-width: 200px; }
 }
-
-/* 小屏兜底：剪切面板的数字输入框换行时不挤压滑杆 */
+/* 窄屏：把操作按钮移到独立一行，让承载剪切面板的信息列拿满剩余宽度。
+   旧布局里 .trim-panel 被挤进约 105px 的 1fr 列，滑杆/数字框会被裁剪。*/
+@media (max-width: 480px) {
+  li.seg { grid-template-columns: 24px 36px minmax(0, 1fr); gap: var(--sp-2); }
+  .seg-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  /* 位率行改为标签一行、下拉一行：16px 的触控字号不会再压住「MP3 位率」标签 */
+  .opt-row-select { grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); padding: var(--sp-3) 0; }
+  .opt-row-select .opt-label { grid-column: 1; }
+  .opt-row-select select {
+    grid-column: 1;
+    justify-self: stretch;
+    width: 100%;
+    font-size: 16px;
+  }
+}
 @media (max-width: 400px) {
-  .trim-num { width: 58px; }
-  .action-summary { font-size: 12px; }
+  .opt-row { grid-template-columns: 76px minmax(0, 1fr) auto; gap: var(--sp-2); }
+  .trim-row { grid-template-columns: 26px minmax(0, 1fr) 56px; gap: 6px; }
+  .trim-num { width: 56px; }
+  li.seg { grid-template-columns: 22px 34px minmax(0, 1fr); gap: 6px; padding: var(--sp-3) var(--sp-2); }
+  .seg-drag { width: 22px; }
+  .icon-btn { width: 34px; height: 34px; flex-basis: 34px; }
+  .action-summary { font-size: 13px; }
+  .btn-lg { padding: 13px var(--sp-3); }
+  /* 两个主按钮改为上下排列：390px 下并排会被 16px 中文挤压换行或溢出 */
+  .btn-row { flex-direction: column; }
+  .btn-row .btn { width: 100%; min-width: 0; }
+  /* 上面的 .opt-row 三列规则特异性相同且更靠后，这里重申位率行仍为单列 */
+  .opt-row-select { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
 </style>
+
+<!-- Audio Merge Lab · 第三方组件许可声明（随产物分发）
+# 第三方组件声明
+
+| 组件 | 用途 | 许可 | 来源 |
+|---|---|---|---|
+| lamejs（`src/vendor/lame.min.js`） | MP3 编码 | LGPL-3.0 | [zhuker/lamejs](https://github.com/zhuker/lamejs) |
+| mpg123-decoder（`src/vendor/mpg123-decoder.min.js`） | MP3 兜底解码（平台解码器失败时） | MIT | [eshaz/wasm-audio-decoders](https://github.com/eshaz/wasm-audio-decoders) → npm `mpg123-decoder@1.0.3` |
+
+## lamejs
+
+- **文件**：`src/vendor/lame.min.js`（LAME MP3 编码器的 JavaScript 移植）
+- **上游仓库**：https://github.com/zhuker/lamejs
+- **许可**：LGPL-3.0
+- **完整性校验**：本文件经 GitHub 从官方仓库获取，git blob SHA-1 为
+  `8dc6b0726388ff75bec69ac55ac5a6cc49e61093`，与上游一致（非自行计算）。
+  重新获取后可用以下命令复核：
+
+  ```text
+  git hash-object src/vendor/lame.min.js
+  ```
+
+- **合规提示**：lamejs 为 LGPL-3.0。以本仓库成果分发时，需向接收方提供该
+  组件的源码获取方式——本仓库通过保留上游链接满足此要求。若计划闭源商业
+  分发，请咨询律师确认合规路径。
+
+## mpg123-decoder
+
+- **文件**：`src/vendor/mpg123-decoder.min.js`（取自 npm 包 `mpg123-decoder@1.0.3` 的
+  `dist/mpg123-decoder.min.js`，UMD 构建，内含 base64 内联的 wasm）
+- **上游仓库**：https://github.com/eshaz/wasm-audio-decoders
+- **许可**：MIT（Copyright 2021-2025 Ethan Halsall）
+- **用途**：仅在平台 `decodeAudioData` 失败且文件被识别为 MPEG 音频时启用，
+  作为兜底解码路径；正常路径不加载其 wasm 实例
+- **注意**：该文件包含一段经编码的内联 WebAssembly 体积（MP3 解码内核），
+  这是其体积来源；构建时校验其不含 `<script` 序列以安全内联
+
+## 应用图标
+
+`dist/icons/` 下的 PNG 图标由 `tools/build.js` 在构建时用纯 Node（zlib）
+程序化生成，无第三方素材，版权归本项目。
+
+
+MIT License
+
+Copyright (c) 2026 Audio Merge Lab contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+附加声明（本仓库适用范围）
+----------------------------
+1. 本 LICENSE 仅适用于本项目原创代码（src/audio-core.js、src/app.js、
+   src/styles.css、src/sw.js、src/manifest.webmanifest、
+   index.template.html、tools/、test/ 等由本项目作者编写的部分）。
+2. 第三方文件 src/vendor/lame.min.js 为上游项目 zhuker/lamejs 的分发产物，
+   按其上游 LGPL-3.0 许可处理，不适用本许可证。
+   详见 THIRD-PARTY-NOTICES.md。
+3. dist/ 为构建产物，可复现、不随仓库分发（见 .gitignore）。
+
+-->
 </head>
 <body>
 <div class="wrap">
 
+  <!-- 应用标识与隐私说明：主标题 → 一句话功能 → 隐私承诺 → 次级入口 -->
   <header class="app-header">
-    <h1><span class="dot"></span>录音合并器</h1>
-    <p>导入 mp3 / m4a / wav / webm 等音频，或直接录音，按顺序合并为一个文件。全部在本地处理，不上传任何数据。</p>
-    <p class="header-links"><a href="guide.html">第一次用？看使用指南 →</a></p>
-  </header>
-
-  <!-- 导入 / 录音 -->
-  <section class="card">
-    <h2>1. 添加片段</h2>
-    <div class="btn-row">
-      <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
-           不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
-      <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
-      <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
-    </div>
-    <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
-    <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
-         会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
-    <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
-    <label class="alt-import" for="fileInputAny" id="btnImportAny">选不到文件？用兼容模式选择（不过滤格式）</label>
-    <div class="rec-indicator">
-      <span class="rec-dot" id="recordDot" hidden></span>
-      <span id="recordTime"></span>
-    </div>
-    <p class="hint">支持多选。文件仅在浏览器内解码，不会发送到任何服务器。</p>
-  </section>
-
-  <!-- 片段列表 -->
-  <section class="card">
-    <h2>2. 调整顺序 <span class="count" id="listCount">0 段</span></h2>
-    <ul class="seg-list" id="segmentList"></ul>
-    <div class="btn-row" style="margin-top:10px">
-      <button class="btn ghost" id="btnClear" type="button">清空列表</button>
-    </div>
-  </section>
-
-  <!-- 输出与选项 -->
-  <section class="card">
-    <h2>3. 输出与选项</h2>
-    <div class="opt-row">
-      <label>输出格式</label>
-      <div class="seg-control" id="formatGroup">
-        <button type="button" class="seg-btn" data-fmt="wav">WAV</button>
-        <button type="button" class="seg-btn active" data-fmt="mp3">MP3</button>
-        <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
+    <div class="app-identity">
+      <span class="app-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <div class="app-identity-text">
+        <h1>录音合并器</h1>
+        <p class="app-subtitle">Audio Merge Lab</p>
       </div>
     </div>
-    <div class="opt-row" id="bitrateRow">
-      <label for="bitrateSel">MP3 位率</label>
-      <select id="bitrateSel">
-        <option value="96">96 kbps</option>
-        <option value="128" selected>128 kbps</option>
-        <option value="192">192 kbps</option>
-        <option value="256">256 kbps</option>
-        <option value="320">320 kbps</option>
-      </select>
+    <p class="app-intro">导入或录下多段音频，按顺序合并为一个 WAV / MP3 / M4A 文件。</p>
+    <div class="privacy-row">
+      <span class="privacy-chip">纯本地处理 · 不上传</span>
+      <a class="header-link" href="guide.html">使用指南 →</a>
     </div>
-    <div class="opt-row">
-      <label for="gapRange">片段间隔</label>
-      <input type="range" id="gapRange" min="0" max="3" step="0.1" value="0">
-      <output id="gapValue">0.0 秒</output>
-    </div>
-    <label class="checkbox-row" for="normalizeChk">
-      <input type="checkbox" id="normalizeChk">
-      <span>峰值归一化（统一各段音量，避免某段太轻）</span>
-    </label>
-    <p class="hint" id="formatHint"></p>
-    <p class="hint" id="sizeEst"></p>
-  </section>
+  </header>
+
+  <main>
+    <!-- 步骤 1：添加片段 -->
+    <section class="card" aria-labelledby="step1Title">
+      <div class="card-head">
+        <span class="step-badge" aria-hidden="true">1</span>
+        <div class="card-head-text">
+          <h2 id="step1Title">添加片段</h2>
+          <p class="card-desc">导入音频文件，或直接录一段</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="btn-row">
+          <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
+               不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
+          <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
+          <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
+        </div>
+        <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
+        <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
+             会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
+        <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
+        <label class="alt-import" for="fileInputAny" id="btnImportAny">选不到文件？用兼容模式选择（不过滤格式）</label>
+        <div class="rec-indicator">
+          <span class="rec-dot" id="recordDot" hidden></span>
+          <span id="recordTime"></span>
+        </div>
+        <p class="hint">支持多选：mp3 / m4a / wav / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
+      </div>
+    </section>
+
+    <!-- 步骤 2：片段列表（顺序、试听、剪切、复制） -->
+    <section class="card" aria-labelledby="step2Title">
+      <div class="card-head">
+        <span class="step-badge" aria-hidden="true">2</span>
+        <div class="card-head-text">
+          <h2 id="step2Title">调整顺序</h2>
+          <p class="card-desc">按住 ⠿ 拖动排序，可试听、剪切或复制</p>
+        </div>
+        <span class="count" id="listCount">0 段</span>
+      </div>
+      <div class="card-body card-body-flush">
+        <ul class="seg-list" id="segmentList"></ul>
+      </div>
+      <div class="card-foot">
+        <button class="btn ghost" id="btnClear" type="button">清空列表</button>
+      </div>
+    </section>
+
+    <!-- 步骤 3：输出与选项（标签列 / 控件列 / 数值列三列对齐） -->
+    <section class="card" aria-labelledby="step3Title">
+      <div class="card-head">
+        <span class="step-badge" aria-hidden="true">3</span>
+        <div class="card-head-text">
+          <h2 id="step3Title">输出与选项</h2>
+          <p class="card-desc">格式、位率、间隔与音量</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="opt-group">
+          <div class="opt-row">
+            <label class="opt-label">输出格式</label>
+            <div class="seg-control" id="formatGroup">
+              <button type="button" class="seg-btn" data-fmt="wav">WAV</button>
+              <button type="button" class="seg-btn active" data-fmt="mp3">MP3</button>
+              <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
+            </div>
+          </div>
+          <div class="opt-row opt-row-select" id="bitrateRow">
+            <label class="opt-label" for="bitrateSel">MP3 位率</label>
+            <select id="bitrateSel">
+              <option value="96">96 kbps · 编码较慢</option>
+              <option value="128" selected>128 kbps</option>
+              <option value="192">192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+            </select>
+          </div>
+          <div class="opt-row">
+            <label class="opt-label" for="gapRange">片段间隔</label>
+            <input type="range" id="gapRange" min="0" max="3" step="0.1" value="0">
+            <output id="gapValue">0.0 秒</output>
+          </div>
+          <label class="checkbox-row" for="normalizeChk">
+            <input type="checkbox" id="normalizeChk">
+            <span>峰值归一化（统一各段音量，避免某段太轻）</span>
+          </label>
+        </div>
+        <p class="hint" id="formatHint"></p>
+        <p class="hint" id="sizeEst"></p>
+      </div>
+    </section>
+  </main>
 
   <audio id="segPlayer" preload="none" hidden></audio>
 
-  <!-- 进度 -->
+  <!-- 进度：独立于卡片，位于底部操作栏上方 -->
   <div id="progressWrap" hidden>
     <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
     <div class="progress-meta">
@@ -756,30 +1067,37 @@ li.seg.failed .seg-meta { color: var(--danger); }
     </div>
   </div>
 
-  <p id="status"></p>
+  <p id="status" role="status" aria-live="polite"></p>
 
-  <!-- 结果 -->
-  <section class="card" id="resultBox" hidden>
-    <h2>4. 完成</h2>
-    <!-- 大文件不自动加载：iOS 上在成功瞬间创建 objectURL + 让 audio 载入大 Blob
-         会触发 WebView 内存上限导致页面被系统重载（分享按钮来不及出现） -->
-    <audio id="resultAudio" controls preload="none" hidden></audio>
-    <p id="resultMeta"></p>
-    <div class="btn-row">
-      <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
-      <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
-    </div>
-    <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
-         iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
-    <div id="saveBox" hidden>
-      <div class="btn-row">
-        <button class="btn ghost btn-lg" id="btnSaveFile" type="button">💾 生成保存链接</button>
+  <!-- 结果：大文件不自动加载，避免 iOS 在成功瞬间创建 objectURL 触发页面重载 -->
+  <section class="card card-result" id="resultBox" hidden>
+    <div class="card-head">
+      <span class="step-badge step-badge-done" aria-hidden="true">✓</span>
+      <div class="card-head-text">
+        <h2>合并完成</h2>
+        <p class="card-desc">试听、分享，或保存到「文件」App</p>
       </div>
-      <a class="btn primary btn-lg save-link" id="saveLink" href="#" target="_blank" rel="noopener" hidden>💾 点此保存（存到「文件」App）</a>
-      <p class="hint" id="saveHint"></p>
+    </div>
+    <div class="card-body">
+      <audio id="resultAudio" controls preload="none" hidden></audio>
+      <p id="resultMeta"></p>
+      <div class="btn-row">
+        <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
+        <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
+      </div>
+      <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
+           iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
+      <div id="saveBox" hidden>
+        <div class="btn-row">
+          <button class="btn ghost btn-lg" id="btnSaveFile" type="button">💾 生成保存链接</button>
+        </div>
+        <a class="btn primary btn-lg save-link" id="saveLink" href="#" target="_blank" rel="noopener" hidden>💾 点此保存（存到「文件」App）</a>
+        <p class="hint" id="saveHint"></p>
+      </div>
     </div>
   </section>
 
+  <!-- 底部固定操作栏：唯一主操作，始终可见 -->
   <div class="action-bar" id="actionBar" hidden>
     <div class="action-inner">
       <span class="action-summary" id="actionSummary"></span>
@@ -1136,7 +1454,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.4.2';
+  var APP_VERSION = '0.5.0';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -1294,13 +1612,30 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    *   3. concatSegments 本身也改为单遍直写输出（去掉 conform 中间层）。
    * ------------------------------------------------------------------ */
 
-  /** 合并选项归一化（DEFAULTS + 用户覆盖） */
+  /** 合并选项归一化（DEFAULTS + 用户覆盖），并拒绝会产生静默损坏的数值 */
   function mergeOptions(options) {
     var opts = {};
     var k;
     for (k in DEFAULTS) opts[k] = DEFAULTS[k];
     for (k in (options || {})) {
       if (Object.prototype.hasOwnProperty.call(options || {}, k)) opts[k] = options[k];
+    }
+    // NaN / 负值 / 非法声道数会让帧数计算产出 NaN 或越界写入，最终生成损坏文件；
+    // 公共 API 必须显式拒绝，而不是让错误一路流到 WAV 头。
+    function num(name, min, max) {
+      var v = opts[name];
+      if (typeof v !== 'number' || !isFinite(v) || v < min || (max != null && v > max)) {
+        throw new Error('mergeOptions: ' + name + ' 必须是 ' + min + '~' +
+          (max == null ? '∞' : max) + ' 之间的有限数，收到 ' + v);
+      }
+    }
+    num('targetSampleRate', 1, 384000);
+    num('gapSec', 0);
+    num('fadeMs', 0);
+    num('normalizeTarget', 0, 1);
+    num('maxNormalizeGain', 1);
+    if (opts.targetChannels !== 1 && opts.targetChannels !== 2) {
+      throw new Error('mergeOptions: targetChannels 只支持 1 或 2，收到 ' + opts.targetChannels);
     }
     return opts;
   }
@@ -1346,6 +1681,12 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    *   convert(o0, o1, outChs) → 实际转换帧数；outChs[c] 为长度 ≥ (o1-o0) 的TypedArray
    */
   function createSegmentConverter(srcPcm, opts) {
+    if (!srcPcm || !srcPcm.channels || !srcPcm.channels.length) {
+      throw new Error('createSegmentConverter: 源 PCM 为空');
+    }
+    if (opts.targetChannels !== 1 && opts.targetChannels !== 2) {
+      throw new Error('createSegmentConverter: 目标声道数只支持 1 或 2，收到 ' + opts.targetChannels);
+    }
     var src = srcPcm.channels;
     var srcLen = src[0].length;
     var srcRate = srcPcm.sampleRate;
@@ -1406,7 +1747,11 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
           emit(v, outChs[0], n);
           emit(v, outChs[1], n);
         } else {
-          for (c = 0; c < targetChannels; c++) emit(scratch[c] * g * gain, outChs[c], n);
+          // 源声道多于目标时取前 N 个；少于目标时用最后一个声道补齐，
+          // 不写出 undefined（NaN 会一路污染成品）。
+          for (c = 0; c < targetChannels; c++) {
+            emit(scratch[Math.min(c, src.length - 1)] * g * gain, outChs[c], n);
+          }
         }
       }
       return frames;
@@ -1603,6 +1948,14 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var blockAlign = numChannels * bytesPerSample;
     var dataSize = numFrames * blockAlign;
 
+    // RIFF 的 chunk size 是 32 位无符号：dataSize 与 36+dataSize 都必须能容纳。
+    // setUint32 对超限值会静默截断，产出的文件头与实际数据长度不符（播放器按头截断，
+    // 极端情况被当成 44 字节空文件），而流式落盘确实能写出 >4GB 的 WAV。
+    // 因此在写头之前明确拒绝，而不是等结果文件已经损坏才发现。
+    if (!isFinite(dataSize) || dataSize < 0 || dataSize > 0xffffffff - 36) {
+      throw new Error('WAV 输出超过 RIFF 格式上限（约 4 GB）：请改用 MP3 或分段合并');
+    }
+
     var buffer = new ArrayBuffer(44);
     var view = new DataView(buffer);
     function writeStr(off, s) {
@@ -1763,6 +2116,11 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var isCanceled = opts.isCanceled || function () { return false; };
 
     var numChannels = pcm.channels.length;
+    // lamejs 的 Mp3Encoder 只接受 1/2 声道；>2 时旧实现只编码前两声道却把
+    // numChannels 原样传进去，得到的是声道数声明与实际数据不符的坏文件。
+    if (numChannels !== 1 && numChannels !== 2) {
+      throw new Error('encodeMP3: 只支持单声道或立体声，收到 ' + numChannels + ' 声道');
+    }
     var sampleRate = pcm.sampleRate;
     var int16 = pcmToInt16Channels(pcm);
     var total = int16[0].length;
@@ -1981,6 +2339,12 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     if ([1, 2, 3, 4, 8].indexOf(bytesPerSample) === -1) {
       throw new Error('WAV 位深不支持: ' + fmt.bitsPerSample);
     }
+    // IEEE float WAV 只定义 32/64 位；若遇到 float 头但位深为 8/16/24，
+    // 旧实现的 isFloat 分支对 1/2/3 字节一律写 0，会静默产出整段静音。
+    if (fmt.audioFormat === 3 && bytesPerSample !== 4 && bytesPerSample !== 8) {
+      throw new Error('IEEE float WAV 位深不支持: ' + fmt.bitsPerSample +
+        '（仅支持 32 / 64 位浮点）');
+    }
     var blockAlign = fmt.numChannels * bytesPerSample;
     var frames = Math.floor(dataLen / blockAlign);
     if (frames <= 0) throw new Error('WAV 无可解析的采样数据');
@@ -1997,7 +2361,9 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
           v = bytesPerSample === 4 ? dv.getFloat32(off, true)
             : (bytesPerSample === 8 ? dv.getFloat64(off, true) : 0);
         } else if (bytesPerSample === 1) {
-          v = (bytes[off] - 128) / 128; // 8bit WAV 为无符号
+          // 8bit WAV 为无符号 [0,255]；用 127.5 作中点才能让 0→-1、255→+1
+          // 对称满幅（旧的 /128 会让正半轴少 1 LSB，且 0 映射到 -1、255 只到 0.992）
+          v = (bytes[off] - 127.5) / 127.5;
         } else if (bytesPerSample === 2) {
           v = dv.getInt16(off, true) / 32768;
         } else if (bytesPerSample === 3) {
@@ -2013,9 +2379,90 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     return { sampleRate: fmt.sampleRate, channels: channels };
   }
 
+  /**
+   * 计算片段剪切后的有效时长（秒）。
+   *
+   * 必须与 app.js 的 segTrimFrames 对「无效范围」的处理保持一致：起止倒置、相等、
+   * 终点为 0、起点超过时长，一律回退整段。旧实现返回 0（起点>时长时甚至返回负值），
+   * 而 planMerge 按整段输出，造成界面显示 0 秒却合并出整段音频，并绕过体积保护。
+   *
+   * @param {number} duration 片段总时长（秒）
+   * @param {number} [trimStart] 起点（秒）
+   * @param {number} [trimEnd] 终点（秒）
+   * @returns {number} 有效时长（秒，恒 >= 0）
+   */
+  function effectiveDurationSec(duration, trimStart, trimEnd) {
+    var dur = Number(duration);
+    if (!isFinite(dur) || dur <= 0) return 0;
+    var s = (typeof trimStart === 'number' && isFinite(trimStart)) ? trimStart : 0;
+    var e = (typeof trimEnd === 'number' && isFinite(trimEnd)) ? trimEnd : dur;
+    s = Math.max(0, Math.min(s, dur));
+    e = Math.max(0, Math.min(e, dur));
+    if (e <= s) return dur;
+    return e - s;
+  }
+
+  /**
+   * 短音频判定（「警告但保留」策略）。
+   *
+   * 只有 0 帧 / 非数 / 负时长才是真正的无效解码，必须交给降级链或报错；
+   * 0 < duration < threshold 的极短结果既可能是合法提示音/音效，也可能是损坏
+   * 文件解出的噪声，单凭时长无法区分。因此保留结果并返回警示文案，由用户试听决定，
+   * 不再静默丢弃或误报「解码失败」。
+   *
+   * @param {number} durationSec 解码结果时长（秒）
+   * @param {number} thresholdSec 警示阈值（app.js 传 MIN_VALID_SEC）
+   * @returns {{valid: boolean, warning: (string|null)}}
+   */
+  function assessShortAudio(durationSec, thresholdSec) {
+    var d = Number(durationSec);
+    if (!isFinite(d) || d <= 0) return { valid: false, warning: null };
+    var t = Number(thresholdSec);
+    if (!isFinite(t) || t <= 0 || d >= t) return { valid: true, warning: null };
+    return {
+      valid: true,
+      warning: '解码时长仅 ' + (d * 1000).toFixed(0) +
+        ' 毫秒：可能是极短音效，也可能是损坏文件，请试听确认后再合并'
+    };
+  }
+
+  /**
+   * 选择整次合并的目标声道数：全部片段均为单声道时输出单声道（编码量约减半），
+   * 否则统一输出立体声。
+   *
+   * 关键约束：一次合并**只能有一个**目标声道数。WAV 头（numChannels / blockAlign /
+   * byteRate / dataSize）、MP3 编码器状态、Int16 缓冲与交织缓冲都在合并开始时按它
+   * 初始化；若逐段变化，会产出头部与实际数据不符的损坏文件。
+   * 因此混合输入必须上混为立体声，不能让各段保留自己的声道数。
+   * 数据未就绪或异常时保守回退立体声，避免估算与合并结果不一致。
+   *
+   * @param {Array<{pcm?:{channels:Array}}>} segments
+   * @returns {number} 1 或 2
+   */
+  function pickTargetChannels(segments) {
+    if (!segments || !segments.length) return 2;
+    for (var i = 0; i < segments.length; i++) {
+      var seg = segments[i];
+      var n = 0;
+      if (seg && seg.pcm && seg.pcm.channels && seg.pcm.channels.length) {
+        n = seg.pcm.channels.length;
+      } else if (seg && typeof seg.channels === 'number' && seg.channels > 0) {
+        // 流式合并会逐段释放 pcm；解码时保存的 channels 仍在，用它保持判定稳定，
+        // 否则合并后 UI 会从「单声道」翻转成「立体声」，与实际产物不符。
+        n = seg.channels;
+      }
+      if (n !== 1) return 2;
+    }
+    return 1;
+  }
+
   return {
     APP_VERSION: APP_VERSION,
     DEFAULTS: DEFAULTS,
+    mergeOptions: mergeOptions,
+    effectiveDurationSec: effectiveDurationSec,
+    assessShortAudio: assessShortAudio,
+    pickTargetChannels: pickTargetChannels,
     createSilence: createSilence,
     resampleChannel: resampleChannel,
     conformPcm: conformPcm,
@@ -2077,16 +2524,20 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     mergedBlob: null,
     mergedUrl: null,
     mergedExt: 'mp3',
-    mergedOpfsName: null, // 当前结果对应的 OPFS 文件名（清理时保留）
+    recordPending: false, // 录音权限请求进行中（防止连点产生多个 MediaRecorder/流）
     serverReady: false    // 是否检测到局域网下载服务（tools/serve.js）
   };
 
   // 拖拽排序状态（pointer events，一套代码兼容鼠标与触摸）
   var segDrag = null; // {id, li, pointerId}
+  var pendingRender = false; // 拖拽期间被推迟的列表重建
 
   var decodeQueue = [];    // 待解码片段队列（顺序执行，控制内存峰值）
   var decodeRunning = false;
   var warmStarted = false; // 音频管线预热只做一次
+
+  // 上传通道：双入口（分享按钮 / 保存链接按钮）共用一把锁，且必须可超时、可取消
+  var uploadState = { xhr: null, busy: false };
 
   // 预热燃料：0.1 秒 128kbps MPEG-1 Layer III（FF FB 头，与真实文件同解码路径）。
   // 由 tools 生成脚本用官方 lamejs 编码后内联，仅用于预热，解码后即丢弃。
@@ -2141,8 +2592,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    * 这种结果完全不可用，但走的是成功分支（连承promise 都 resolve），
    * 于是用户看到「已解码 0:00」，合并时又被 planMerge 静默跳过：那一段无声无息消失。
    *
-   * 0.05 秒（约 2400 帧 @48kHz）足以覆盖这类垃圾解码，同时远离任何真实录音的
-   * 最短长度（正常使用不会出现 50 毫秒以内的音频片段）。
+   * 0.05 秒（约 2400 帧 @48kHz）是「警示阈值」而不是拒绝阈值：
+   * 极短但非零的结果统一「警告但保留」——合法短音效不该被误杀，损坏文件解出的
+   * 噪声则通过列表里的黄色警示行交用户试听判断。只有 0 帧 / 非数时长才转降级链
+   * 或报错（见 AudioCore.assessShortAudio）。
    */
   var MIN_VALID_SEC = 0.05;
 
@@ -2156,13 +2609,43 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     return e;
   }
 
+  function isAndroid() {
+    return /Android/i.test(navigator.userAgent || '');
+  }
+
   function nextFrame() {
     return new Promise(function (r) {
       /* 后台标签页里 rAF 完全停摆——切后台/锁屏时合并会卡住不动，直到回到前台。
-       * setTimeout 在后台虽被节流（约 1 秒/次）但仍能推进，让合并不至于纹丝不动。
-       * 前台仍走 rAF（与屏幕刷新同步，进度更平滑）。 */
-      if (typeof document !== 'undefined' && document.hidden) setTimeout(r, 0);
-      else if (window.requestAnimationFrame) requestAnimationFrame(function () { r(); });
+       * setTimeout 在后台虽被节流（约 1 秒/次）但仍能推进；长音频里每 8 块让出一次，
+       * 累积起来可能是数分钟纯等待。
+       * 安卓优先优化：MessageChannel 的 task 不依赖 timer 节流，能大幅减少后台等待；
+       * 仅安卓启用，iOS 保持原路径，且创建失败时自动回退到 setTimeout。 */
+      if (typeof document !== 'undefined' && document.hidden) {
+        if (isAndroid() && typeof MessageChannel === 'function') {
+          var ch = null, fallback = null;
+          try {
+            ch = new MessageChannel();
+            /* 必须有超时兜底：后台 task 队列可能被冻结/BFCache，消息永不派发时
+               若只靠 onmessage，Promise 永不 settle → 合并永久卡死、结果丢失。
+               timer 与 onmessage 谁先到谁生效（Promise resolve 幂等）。 */
+            fallback = setTimeout(function () {
+              try { ch.port1.close(); ch.port2.close(); } catch (e) { /* 忽略 */ }
+              r();
+            }, 1000);
+            ch.port1.onmessage = function () {
+              clearTimeout(fallback);
+              try { ch.port1.close(); ch.port2.close(); } catch (e) { /* 忽略 */ }
+              r();
+            };
+            ch.port2.postMessage(0);
+            return;
+          } catch (e) {
+            if (fallback) clearTimeout(fallback);
+            /* 回退到 setTimeout */
+          }
+        }
+        setTimeout(r, 0);
+      } else if (window.requestAnimationFrame) requestAnimationFrame(function () { r(); });
       else setTimeout(r, 16);
     });
   }
@@ -2219,15 +2702,28 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
 
   function showProgress(p, label) {
     $('progressWrap').hidden = false;
+    // 新一轮进度开始：清空节流窗口与上一轮的标签，保证第一条中间进度一定可见
+    lastProgressPaint = 0;
+    lastProgressLabel = '';
     setProgress(p, label);
   }
 
+  var lastProgressPaint = 0;
+  var lastProgressLabel = '';
   function setProgress(p, label) {
+    // 低端安卓上每块一次 DOM 写入有明显布局成本；按时间节流，
+    // 起始(0)、完成(1)、阶段(label)变化与首次显示强制刷新，避免进度条卡在旧值。
+    var now = Date.now();
+    var stageChanged = (label || '') !== lastProgressLabel;
+    if (p > 0 && p < 1 && !stageChanged && now - lastProgressPaint < 80) return;
+    lastProgressPaint = now;
+    lastProgressLabel = label || '';
     $('progressFill').style.width = Math.round(p * 100) + '%';
     $('progressLabel').textContent = (label ? label + ' · ' : '') + Math.round(p * 100) + '%';
   }
 
   function hideProgress() {
+    lastProgressPaint = 0;
     $('progressWrap').hidden = true;
     $('progressFill').style.width = '0%';
   }
@@ -2236,6 +2732,11 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     state.busy = busy;
     $('btnImport').classList.toggle('disabled', busy);
     $('btnRecord').disabled = busy;
+    // 合并中禁止改动输出格式/位率：streamMerge 的头部与编码器按进入时格式
+    // 初始化一次，中途切换会崩在 enc=null 或产出头部与数据不符的损坏文件。
+    $('bitrateSel').disabled = busy;
+    var fmtBtns = document.querySelectorAll('#formatGroup .seg-btn');
+    for (var i = 0; i < fmtBtns.length; i++) fmtBtns[i].disabled = busy;
     updateMergeButton();
   }
 
@@ -2322,11 +2823,9 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    */
   function segEffectiveDuration(seg) {
     if (!seg || !seg.duration) return 0;
-    var dur = seg.duration;
-    var start = typeof seg.trimStart === 'number' ? seg.trimStart : 0;
-    var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : dur;
-    if (end <= start) return 0;
-    return Math.min(end, dur) - Math.max(0, start);
+    // 统一到核心层纯函数：无效剪切范围回退整段（与 segTrimFrames 一致）。
+    // 旧实现返回 0 / 负值，界面承诺与实际 planMerge 输出相反。
+    return AudioCore.effectiveDurationSec(seg.duration, seg.trimStart, seg.trimEnd);
   }
 
   function totalDuration() {
@@ -2369,6 +2868,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       channels: seg.channels,
       decoding: false,
       failed: false,
+      warn: seg.warn || null,    // 短音频/内置解码的试听警示必须随副本保留
       released: !seg.pcm,       // 原片段还没解码完 → 副本入队自己解
       trimStart: seg.trimStart != null ? seg.trimStart : null,
       trimEnd: seg.trimEnd != null ? seg.trimEnd : null,
@@ -2439,6 +2939,18 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     decodeRunning = true;
     decodeSegment(seg).then(function () {
       decodeRunning = false;
+      pumpQueue();
+    }).catch(function (err) {
+      // decodeSegment 内部已尽力处理常见失败；这里兜住意外 rejection，
+      // 否则 decodeRunning 永远为 true，后续导入的片段再也不会解码。
+      decodeRunning = false;
+      if (!seg.removed) {
+        seg.decoding = false;
+        seg.failed = true;
+        seg.errorMsg = '解码异常：' + (err && err.message ? err.message : err);
+        setStatus(seg.errorMsg, true);
+      }
+      renderList(true);
       pumpQueue();
     });
   }
@@ -2545,28 +3057,36 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
        * 全是这类文件时还会抛出内部的 "planMerge: 所有片段均为空"。因此必须当失败，
        * 并继续走降级链让内置解析器再试一次。 */
       var platformSuspicious = false;
+      var shortWarning = null;
       if (audioBuf && audioBuf.length === 0) {
         primaryErr = new Error('平台解码器返回了 0 帧音频（文件很可能损坏或不完整）');
         audioBuf = null;
         platformSuspicious = true;
-      } else if (audioBuf && audioBuf.duration < MIN_VALID_SEC) {
-        primaryErr = new Error('平台解码器只解出 ' + (audioBuf.duration * 1000).toFixed(0) +
-          ' 毫秒音频（文件很可能损坏或不完整）');
-        audioBuf = null;
-        platformSuspicious = true;
+      } else if (audioBuf) {
+        // 「警告但保留」：极短但非零的结果保留并挂警示；只有无效时长才转降级链
+        var primaryAssessment = AudioCore.assessShortAudio(audioBuf.duration, MIN_VALID_SEC);
+        if (!primaryAssessment.valid) {
+          primaryErr = new Error('平台解码器返回了无效时长（文件很可能损坏或不完整）');
+          audioBuf = null;
+          platformSuspicious = true;
+        } else {
+          shortWarning = primaryAssessment.warning;
+        }
       }
 
       if (audioBuf) {
         seg.pcm = audioBufferToPcm(audioBuf);
         seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
-        seg.warn = null; // 平台这次解好了，清掉此前可能存在的"结果存疑"警示
+        seg.released = false;      // 复制片段自己解完后必须清标记，否则下次合并又全量重解一遍
+        seg.warn = shortWarning; // 极短音频保留但给出试听警示；正常结果为 null
         seg.duration = audioBuf.duration;
         seg.sampleRate = audioBuf.sampleRate;
         seg.channels = audioBuf.numberOfChannels;
         seg.decoding = false;
+        if (seg.removed) return; // 解码期间被删除：不再渲染/汇报幽灵片段
         renderList();
         var rest = decodeQueue.length;
-        setStatus('已解码「' + seg.name + '」（' + fmtTime(seg.duration) + '）' +
+        reportDecodeStatus(seg, '已解码「' + seg.name + '」（' + fmtTime(seg.duration) + '）' +
           (rest > 0 ? '，队列还剩 ' + rest + ' 个' : '') +
           '。当前共 ' + state.segments.length + ' 段，合计 ' + fmtTime(totalDuration()));
         return;
@@ -2588,17 +3108,21 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         fbErr = e2;
       }
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
-      // 兜底解析器同样可能产出 0 帧或垃圾短解（例如 mpg123 空解），一样按失败处理，
-      // 绝不允许"静默消失"或"只有几十毫秒"的片段混进列表。
+      // 兜底解析器产出 0 帧仍按失败处理（绝不允许片段静默消失）；
+      // 极短但有效的结果按「警告但保留」进入列表并显示黄色警示行。
       var fbSec = fb ? AudioCore.pcmDurationSec(fb.pcm) : 0;
-      if (fb && fbSec < MIN_VALID_SEC) {
+      var fbAssessment = AudioCore.assessShortAudio(fbSec, MIN_VALID_SEC);
+      var fbShortWarn = null;
+      if (fb && !fbAssessment.valid) {
         fb = null;
-        fbErr = new Error('内置解析器只解出 ' + (fbSec * 1000).toFixed(0) +
-          ' 毫秒音频，文件很可能损坏');
+        fbErr = new Error('内置解析器未解出有效音频，文件很可能损坏');
+      } else if (fb) {
+        fbShortWarn = fbAssessment.warning;
       }
       if (fb) {
         seg.pcm = fb.pcm;
         seg.audioBuffer = null; // 无 AudioBuffer，M4A 路径会按 PCM 重建
+        seg.released = false;   // 同平台解码路径：解完即清，避免重复解码
         seg.duration = AudioCore.pcmDurationSec(fb.pcm);
         seg.sampleRate = fb.pcm.sampleRate;
         seg.channels = fb.pcm.channels.length;
@@ -2607,17 +3131,18 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         // 平台只解出一小段（典型：损坏 MP3 被解成几十毫秒噪声）时，内置解析器的结果
         // 未必可信——它可能是把垃圾数据硬解出来的。此时仍采用其输出（否则那段会静默消失），
         // 但必须显式标注，让用户试听确认后再决定是否留下。
-        seg.warn = platformSuspicious
-          ? '平台解码结果异常短，内容由内置解码器还原，请试听确认后再合并'
-          : null;
+        seg.warn = fbShortWarn || (platformSuspicious
+          ? '平台解码结果为 0 帧，内容由内置解码器还原，请试听确认后再合并'
+          : null);
         var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG' : 'WAV');
+        if (seg.removed) return;
         renderList();
         if (platformSuspicious) {
-          setStatus('「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
+          reportDecodeStatus(seg, '「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
             '）解出 ' + fmtTime(seg.duration) +
             '，请试听确认内容是否完整，若不满意可删除该片段');
         } else {
-          setStatus('「' + seg.name + '」平台解码器不支持，已用内置解码器（' + label +
+          reportDecodeStatus(seg, '「' + seg.name + '」平台解码器不支持，已用内置解码器（' + label +
             '）解码完成：' + fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
         }
         return;
@@ -2625,13 +3150,19 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       // 无内置解析器：抛出带格式信息与建议的错误
       throw decorateDecodeError(seg, info, primaryErr, fbErr);
     } catch (err) {
-      if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+      if (seg.removed || !state.segments.some(function (s) { return s.id === seg.id; })) return;
       seg.decoding = false;
       seg.failed = true;
       seg.errorMsg = err && err.message ? err.message : String(err);
       renderList();
-      setStatus(seg.errorMsg, true);
+      reportDecodeStatus(seg, seg.errorMsg, true);
     }
+  }
+
+  /** 解码状态汇报：合并/取消进行中不覆盖进度与取消提示；已删除片段不产生幽灵提示 */
+  function reportDecodeStatus(seg, msg, isError) {
+    if (!seg || seg.removed || state.busy) return;
+    setStatus(msg, isError);
   }
 
   /** 组装可操作的解码失败信息（含文件大小、检测格式、建议） */
@@ -2658,6 +3189,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var seg = state.segments.find(function (s) { return s.id === id; });
     if (seg && state.playingId === id) stopSegPlayback();
     if (seg && seg.url) { URL.revokeObjectURL(seg.url); seg.url = null; }
+    // 仍在排队、或正在解码的片段一并标记：否则解码完成后仍会写状态栏/重渲染，
+    // 让用户看到"已解码「已删除的片段」"这种幽灵提示。
+    if (seg) seg.removed = true;
+    decodeQueue = decodeQueue.filter(function (q) { return q.id !== id; });
     state.segments = state.segments.filter(function (s) { return s.id !== id; });
     renderList();
   }
@@ -2718,6 +3253,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   function setFormat(fmt) {
+    if (state.busy) return; // 合并期间格式已由 plan/编码器固定，禁止切换
     if (fmt === 'm4a' && !state.m4aSupported) return;
     state.format = fmt;
     var btns = document.querySelectorAll('#formatGroup .seg-btn');
@@ -2730,15 +3266,34 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     updateMergeButton();
   }
 
+  /**
+   * 整次合并的目标声道数（单一决策点）。
+   * WAV/MP3：全部片段单声道 → 1，否则 → 2；M4A 走独立调度路径，恒为立体声。
+   * 头部、编码器、交织缓冲全部从同一个 plan.targetChannels 派生，禁止逐段变化。
+   */
+  function mergeTargetChannels() {
+    return state.format === 'm4a' ? 2 : AudioCore.pickTargetChannels(state.segments);
+  }
+
   function updateFormatHint() {
     var hint;
     if (state.format === 'wav') {
-      hint = 'WAV 无损：约 ' + fmtSize(estimateTargetRate() * 4) + '/秒，兼容性最好，适合存档。';
+      // 与 updateSizeEstimate 一致：按实际目标声道数计算每秒字节，不能写死立体声
+      hint = 'WAV 无损：约 ' + fmtSize(estimateTargetRate() * mergeTargetChannels() * 2) +
+        '/秒（' + (mergeTargetChannels() === 1 ? '单声道' : '立体声') + '），兼容性最好，适合存档。';
       if (isIOSDevice()) {
         hint += 'iOS 上超大 WAV 可能因内存限制被浏览器重载，长音频建议选 MP3 或分段合并。';
       }
     } else if (state.format === 'mp3') {
       hint = 'MP3 有损压缩：体积约为 WAV 的 1/10，编码在本地完成，长文件需要几十秒。';
+      /* 实测：本项目的 lamejs 在 64/96 kbps 反而比 128 kbps 慢约 2.9 倍，
+         选低位率既不会更快也不会明显更省时间，必须明示避免用户误选。 */
+      if (state.bitrate < 128) {
+        hint += ' 注意：' + state.bitrate + ' kbps 在本编码器上反而比 128 kbps 慢约 2–3 倍，追求速度请选 128 kbps。';
+      }
+      if (mergeTargetChannels() === 1) {
+        hint += ' 已检测到全部片段为单声道，将按单声道编码（更快、体积更小）。';
+      }
     } else {
       hint = 'M4A(AAC) 实时编码：按播放速度录制合并结果，耗时与音频等长，期间请保持页面在前台。';
     }
@@ -2752,18 +3307,23 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       return;
     }
     var rate = estimateTargetRate();
+    var channels = mergeTargetChannels();
     var bytes;
-    if (state.format === 'wav') bytes = dur * rate * 2 * 2;          // 立体声 16bit
+    if (state.format === 'wav') bytes = dur * rate * channels * 2;  // 16bit × 实际声道数
     else if (state.format === 'mp3') bytes = dur * state.bitrate * 1000 / 8;
     else bytes = dur * 128000 / 8;                                    // M4A 按 128kbps 估
     $('sizeEst').textContent = '预计约 ' + fmtSize(bytes) +
-      '（' + Math.round(rate / 1000) + 'kHz · 当前 ' + state.segments.length +
-      ' 段合计 ' + fmtTime(dur) + '）';
+      '（' + Math.round(rate / 1000) + 'kHz · ' + (channels === 1 ? '单声道' : '立体声') +
+      ' · 当前 ' + state.segments.length + ' 段合计 ' + fmtTime(dur) + '）';
   }
 
   /* ---------------- 列表渲染 ---------------- */
   /** 清理已生成的合并结果（列表变动后结果即过期） */
   function hideResult() {
+    // 结果被丢弃时若上传仍在进行，立即中断，避免回调把旧链接写回新界面
+    if (uploadState.busy && uploadState.xhr) {
+      try { uploadState.xhr.abort(); } catch (e) { /* 忽略 */ }
+    }
     var a = $('resultAudio');
     try { a.pause(); } catch (e) { /* 忽略 */ }
     a.removeAttribute('src');
@@ -2794,10 +3354,16 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    * @param {boolean} [keepResult] 为 true 时不清理已生成的合并结果（试听场景用）
    */
   function renderList(keepResult) {
+    // 拖拽把手按下后，DOM 里的 li 正在被 insertBefore 移动。此时若因解码完成等
+    // 异步回调重建列表，segDrag.li 会指向游离节点，出现重复行或拖拽失效。
+    // 推迟到 endDrag 之后补渲染；副作用（估算/按钮状态）仍然立即执行。
+    if (segDrag) { pendingRender = true; return; }
     if (!keepResult) hideResult();
     updateActionBar();
     updateSizeEstimate();
+    updateFormatHint(); // 片段变化会改变目标声道数/低位率提示，需同步刷新
     updateMergeButton();
+    pendingRender = false;
 
     var ul = $('segmentList');
     ul.textContent = '';
@@ -2881,7 +3447,9 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var s = Math.max(0, sec || 0);
     var m = Math.floor(s / 60);
     var r = s - m * 60;
-    return m + ':' + (r < 10 ? '0' : '') + r.toFixed(1);
+    // 「警告但保留」会放行 50ms 级片段，1 位小数会全部显示成 0.0
+    var digits = (s > 0 && s < 1) ? 3 : 1;
+    return m + ':' + (r < 10 ? '0' : '') + r.toFixed(digits);
   }
 
   /** 构建片段剪切面板（起止时间滑杆 + 数字输入） */
@@ -2891,6 +3459,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : dur;
     var panel = el('div', 'trim-panel');
     panel.dataset.role = 'trim';
+    // 「警告但保留」放行 50ms 级片段：0.1s 步长会大于片段总长，滑杆与数字框都不可用
+    var shortClip = dur > 0 && dur < 1;
+    var step = shortClip ? String(Math.max(0.0001, dur / 100)) : '0.1';
+    var digits = shortClip ? 3 : 1;
 
     function row(label, which, value, max) {
       var r = el('div', 'trim-row');
@@ -2900,7 +3472,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       range.className = 'trim-range';
       range.min = '0';
       range.max = String(max);
-      range.step = '0.1';
+      range.step = step;
       range.value = String(value);
       range.dataset.trim = which;
       r.appendChild(range);
@@ -2909,8 +3481,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       num.className = 'trim-num';
       num.min = '0';
       num.max = String(max);
-      num.step = '0.1';
-      num.value = value.toFixed(1);
+      num.step = step;
+      num.value = value.toFixed(digits);
       num.dataset.trim = which;
       r.appendChild(num);
       return r;
@@ -2993,6 +3565,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   async function toggleRecord() {
+    if (state.recordPending) return; // 权限弹窗等待期连点不再产生并发 MediaRecorder / 流
     if (state.mediaRecorder && state.mediaRecorder.state === 'recording') {
       state.mediaRecorder.stop();
       return;
@@ -3007,9 +3580,13 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     }
     // 权限弹窗前预热（弹窗在手机上要好几秒）
     warmAudioPipeline();
+    state.recordPending = true;
+    var stream = null;
     try {
       setStatus('正在请求麦克风权限…');
-      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // 权限等待期间用户可能已清空/离开：仍继续正常启动，但先把 pending 复位
+      state.recordPending = false;
       var mimeType = pickMimeType();
       state.recordChunks = [];
       state.mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : undefined);
@@ -3028,17 +3605,24 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       }, 250);
       setStatus('录音中…（格式：' + (mimeType || '浏览器默认') + '）');
     } catch (err) {
+      // 权限已授予但后续步骤失败时必须关掉麦克风，否则轨道一直占用（指示灯常亮）
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { /* 忽略 */ } });
+      }
       console.error(err);
       var msg = err && err.name === 'NotAllowedError'
         ? '麦克风权限被拒绝，请在浏览器设置中允许后重试' +
           (isWeChat() ? '；或点右上角 ⋯ 用默认浏览器打开' : '')
         : '无法启动录音：' + (err && err.message ? err.message : err);
       setStatus(msg, true);
+    } finally {
+      state.recordPending = false;
     }
   }
 
   async function onRecordStop() {
     clearInterval(state.recordTimer);
+    state.recordPending = false;
     $('btnRecord').textContent = '开始录音';
     $('btnRecord').classList.remove('recording');
     $('recordDot').hidden = true;
@@ -3095,6 +3679,11 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     try {
       var dir = await navigator.storage.getDirectory();
       var handle = await dir.getFileHandle(name, { create: true });
+      // 取消/失败时除了关闭写句柄，还必须删掉这个半成品文件：OPFS 没有 GC，
+      // 旧实现只 close/abort，长音频取消一次就会在磁盘上永久留下几十至几百 MB。
+      var removeFile = async function () {
+        try { await dir.removeEntry(name); } catch (e) { /* 可能已被清理 */ }
+      };
       if (typeof handle.createSyncAccessHandle === 'function') {
         var access = await handle.createSyncAccessHandle();
         access.truncate(0);
@@ -3107,7 +3696,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
             access.close();
             return await handle.getFile(); // OPFS File：磁盘支撑的 Blob，不占内存
           },
-          abort: function () { try { access.close(); } catch (e) { /* 忽略 */ } }
+          abort: async function () {
+            try { access.close(); } catch (e) { /* 忽略 */ }
+            await removeFile();
+          }
         };
       }
       if (typeof handle.createWritable === 'function') {
@@ -3120,9 +3712,13 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
             await writable.close();
             return await handle.getFile();
           },
-          abort: async function () { try { await writable.abort(); } catch (e) { /* 忽略 */ } }
+          abort: async function () {
+            try { await writable.abort(); } catch (e) { /* 忽略 */ }
+            await removeFile();
+          }
         };
       }
+      await removeFile(); // 句柄能力都不可用：清掉刚创建的空文件
       return null;
     } catch (e) {
       return null;
@@ -3159,17 +3755,19 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   /** 合并前确保所有片段都有解码数据（被释放过的重新解码） */
-  async function ensureAllDecoded() {
+  async function ensureAllDecoded(token) {
     var pending = state.segments.filter(function (s) { return s.released && !s.failed; });
     for (var i = 0; i < pending.length; i++) {
+      // 取消发生在重解码队列中时立即停止，不再把剩余片段全量解一遍（大文件尤其明显）
+      if (token !== state.mergeToken) throw canceledError();
       var seg = pending[i];
       seg.released = false;
       seg.decoding = true;
-      renderList();
-      setStatus('重新解码「' + seg.name + '」…');
+      renderList(true);
+      setStatus('正在准备合并：重新解码「' + seg.name + '」…');
       await decodeSegment(seg);
     }
-    renderList();
+    renderList(true);
   }
 
   /** 合并内存估算（字节）：输入解码数据 + 输出文件（时长按剪切后有效时长） */
@@ -3185,7 +3783,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       }
     });
     var out = 0;
-    if (state.format === 'wav') out = dur * estimateTargetRate() * 2 * 2;
+    if (state.format === 'wav') out = dur * estimateTargetRate() * mergeTargetChannels() * 2;
     else if (state.format === 'mp3') out = dur * state.bitrate * 1000 / 8;
     else out = dur * 128000 / 8; // M4A 按 128kbps 估
     return { inputs: inputs, out: out, total: inputs + out };
@@ -3206,7 +3804,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         var t = segTrimFrames(s);
         return { name: s.name, pcm: s.pcm, trimStart: t.start, trimEnd: t.end };
       }),
-      { targetSampleRate: targetRate, targetChannels: 2, gapSec: gapSec, fadeMs: 8 }
+      { targetSampleRate: targetRate, targetChannels: mergeTargetChannels(), gapSec: gapSec, fadeMs: 8 }
     );
 
     // 归一化全局增益（与"先拼接再归一化"等价：拼接后峰值 = 各段淡变后峰值的最大者）
@@ -3336,7 +3934,6 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       var blob;
       if (sink) {
         blob = await sink.finish();
-        state.mergedOpfsName = sink.name;
       } else {
         blob = new Blob(parts, { type: state.format === 'mp3' ? 'audio/mpeg' : 'audio/wav' });
       }
@@ -3401,7 +3998,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         return buf;
       }
 
-      segs.forEach(function (seg) {
+      segs.forEach(function (seg, segIndex) {
         if (!seg.pcm) return;
         var buf = segmentBuffer(seg);
         var dur = buf.duration;
@@ -3421,18 +4018,32 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         src.start(t);
         src.stop(t + dur);
         sources.push(src);
-        t += dur + gapSec;
+        // 只在段间插间隔：WAV/MP3 的 planMerge 也是 gapFrames*(parts-1)，
+        // 旧实现对最后一段也加 gapSec，导致成品多录一段静音、显示时长少报。
+        t += dur + (segIndex < segs.length - 1 ? gapSec : 0);
       });
       var endTime = t;
 
+      var stopped = false;
+      function stopNow() {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(timer);
+        try { if (rec.state !== 'inactive') rec.stop(); } catch (e) { /* 忽略 */ }
+      }
+      rec.onerror = function (e) {
+        stopNow();
+        state.m4aRecorder = null;
+        var err = (e && e.error && e.error.message) || '录制编码失败';
+        reject(new Error('M4A ' + err + '，请改用 WAV 或 MP3'));
+      };
       rec.start(1000);
       var timer = setInterval(function () {
+        // 实时编码与音频等长，取消必须立刻生效，不能等 endTime 到了才检查
+        if (token !== state.mergeToken) { stopNow(); return; }
         var p = Math.min(1, Math.max(0, (ctx.currentTime - t0) / Math.max(0.001, endTime - t0)));
         onProgress(p);
-        if (p >= 1) {
-          clearInterval(timer);
-          if (rec.state !== 'inactive') rec.stop();
-        }
+        if (p >= 1) stopNow();
       }, 250);
 
       rec.onstop = function () {
@@ -3441,6 +4052,11 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         sources.forEach(function (s) { try { s.stop(); } catch (e) { /* 忽略 */ } });
         if (token !== state.mergeToken) {
           reject(canceledError());
+          return;
+        }
+        // 空 chunks 也必须判失败：旧实现会 resolve 一个 0 字节 Blob 并报「合并完成」
+        if (!chunks.length) {
+          reject(new Error('M4A 编码未产出数据（可能是媒体权限或编码器异常），请改用 WAV 或 MP3'));
           return;
         }
         var type = (chunks[0] && chunks[0].type) || mime || 'audio/mp4';
@@ -3481,7 +4097,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     try {
       // 被释放过的片段重新解码（流式合并会逐段释放输入控制内存峰值）
       if (segs.some(function (s) { return s.released; })) {
-        await ensureAllDecoded();
+        await ensureAllDecoded(token);
         if (token !== state.mergeToken) throw canceledError();
         if (decodingCount() > 0 || segs.some(function (s) { return s.failed; })) {
           throw new Error('请先等待所有片段解码完成（或移除失败的片段）');
@@ -3489,18 +4105,30 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       }
 
       if (state.format === 'm4a') {
+        // M4A 不产生 OPFS 文件：顺手清掉上次 WAV/MP3 合并留下的孤儿（hideResult 已丢弃该结果）
+        await cleanOldOpfsFiles(null);
         // M4A：AudioBuffer 顺序调度 + MediaRecorder 实时捕获
         setStatus('M4A 实时编码中：耗时与音频等长，请保持页面在前台…');
         await getCtx();
+        if (token !== state.mergeToken) throw canceledError();
         await nextFrame();
+        if (token !== state.mergeToken) throw canceledError();
         var mTarget = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
         var mGap = parseFloat($('gapRange').value) || 0;
         var mGain = 1;
         if ($('normalizeChk').checked) {
           var mPeak = 0;
-          segs.forEach(function (s) {
-            mPeak = Math.max(mPeak, AudioCore.segmentPeakAfterFade(s.pcm, mTarget, 2, 8));
-          });
+          for (var mi = 0; mi < segs.length; mi++) {
+            // 峰值扫描是同步长任务；每 4 段让出一次，让「取消」在准备阶段就能生效
+            if (token !== state.mergeToken) throw canceledError();
+            if (mi > 0 && mi % 4 === 0) await nextFrame();
+            var ms = segs[mi];
+            // 与 WAV/MP3 路径一致：只统计剪切后区间，否则被剪掉的响段会压低增益
+            var t = segTrimFrames(ms);
+            mPeak = Math.max(mPeak, AudioCore.segmentPeakAfterFade(
+              ms.pcm, mTarget, 2, 8, t.start, t.end
+            ));
+          }
           if (mPeak > 0 && isFinite(mPeak)) mGain = Math.min(0.89 / mPeak, 8);
         }
         var r = await encodeM4AScheduled(segs, mTarget, mGap, mGain, 0.008, token, function (p) {
@@ -3639,54 +4267,109 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    *
    * 接口一律用相对路径（'api/...'），以适配子目录部署（如 GitHub Pages 的 /audio-merge-lab/）。
    */
+  /**
+   * 服务可用状态统一管理：探测失败、服务关闭、上传失败都要复位，
+   * 否则「分享/下载」会被永久锁死在上传通道上，用户刷新才可能恢复（F2）。
+   */
+  function setServerReady(ok) {
+    state.serverReady = !!ok;
+    if ($('resultBox').hidden || !state.mergedBlob) {
+      $('saveBox').hidden = true;
+    } else {
+      $('saveBox').hidden = !state.serverReady;
+    }
+  }
+
+  /** 探测局域网下载服务，返回 Promise<boolean>；带 3 秒超时，老内核自动退化 */
   function probeDownloadServer() {
-    if (typeof fetch !== 'function') return;
-    fetch('api/health', { cache: 'no-store' })
+    if (typeof fetch !== 'function') { setServerReady(false); return Promise.resolve(false); }
+    var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = null;
+    var opts = { cache: 'no-store' };
+    if (ctrl) {
+      opts.signal = ctrl.signal;
+      timer = setTimeout(function () { try { ctrl.abort(); } catch (e) { /* 忽略 */ } }, 3000);
+    }
+    return fetch('api/health', opts)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (info) {
         // 线上静态托管没有该接口（404 或返回 HTML），解析失败即视为不可用
-        if (info && info.ok && info.upload) {
-          state.serverReady = true;
-          $('saveBox').hidden = false;
-        }
+        setServerReady(!!(info && info.ok && info.upload));
+        return state.serverReady;
       })
-      .catch(function () { /* 未运行下载服务：不显示入口，其余功能不受影响 */ });
+      .catch(function () { setServerReady(false); return false; })
+      .then(function (ok) {
+        if (timer) clearTimeout(timer);
+        return ok;
+      });
   }
 
+  /**
+   * 上传到局域网下载服务。返回 Promise<boolean>：false 表示应走本机降级通道。
+   * 双入口（「分享/下载」与「生成保存链接」）共用一把锁，XHR 有超时与取消能力。
+   */
   function uploadForDownload() {
-    var blob = state.mergedBlob;
-    if (!blob) { setStatus('还没有可保存的结果', true); return; }
+    if (uploadState.busy) return Promise.resolve(false);
+    var blob = state.mergedBlob; // 快照：await 期间结果被替换也不会展示旧链接
+    if (!blob) { setStatus('还没有可保存的结果', true); return Promise.resolve(false); }
     var ext = state.mergedExt || 'wav';
     var mime = blob.type || 'audio/wav';
     var filename = 'merged-' + nowStamp() + '.' + ext;
     var btn = $('btnSaveFile');
     btn.disabled = true;
+    uploadState.busy = true;
     showProgress(0, '上传');
     setStatus('正在上传到本机下载服务…');
 
-    // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) setProgress(e.loaded / e.total, '上传');
-    };
-    xhr.onload = function () {
-      btn.disabled = false;
-      hideProgress();
-      var data = null;
-      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
-      if (xhr.status >= 200 && xhr.status < 300 && data && data.url) {
-        showSaveLink(data.url, data.name || filename, data.size || blob.size);
-      } else {
-        setStatus('生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)), true);
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish(ok, msg) {
+        if (settled) return;
+        settled = true;
+        if (uploadState.xhr) { try { uploadState.xhr.ontimeout = uploadState.xhr.onabort = null; } catch (e) { /* 忽略 */ } }
+        uploadState.xhr = null;
+        uploadState.busy = false;
+        btn.disabled = false;
+        hideProgress();
+        if (msg && state.mergedBlob === blob) setStatus(msg, !ok);
+        resolve(ok);
       }
-    };
-    xhr.onerror = function () {
-      btn.disabled = false;
-      hideProgress();
-      setStatus('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi', true);
-    };
-    xhr.send(blob);
+      // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
+      var xhr = new XMLHttpRequest();
+      uploadState.xhr = xhr;
+      xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
+      // 大文件按体积放宽，但绝不允许无限等待（旧实现无 timeout，服务假死后永远卡住）
+      xhr.timeout = Math.max(60000, Math.ceil(blob.size / (256 * 1024)) * 1000);
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) setProgress(e.loaded / e.total, '上传');
+      };
+      xhr.onload = function () {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+        if (xhr.status >= 200 && xhr.status < 300 && data && data.url) {
+          if (state.mergedBlob === blob) showSaveLink(data.url, data.name || filename, data.size || blob.size);
+          finish(true);
+        } else {
+          setServerReady(false);
+          finish(false, '生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)) +
+            '。已切回本机保存，请再点一次「分享 / 下载」');
+        }
+      };
+      function networkFail(msg) {
+        setServerReady(false);
+        finish(false, msg);
+      }
+      xhr.onerror = function () {
+        networkFail('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi。' +
+          '已切回本机保存，请再点一次「分享 / 下载」');
+      };
+      xhr.ontimeout = function () {
+        networkFail('上传超时（下载服务无响应），已切回本机保存');
+        try { xhr.abort(); } catch (e) { /* 忽略 */ }
+      };
+      xhr.onabort = function () { networkFail('上传已中断，已切回本机保存'); };
+      try { xhr.send(blob); } catch (e) { networkFail('无法发起上传：' + (e && e.message ? e.message : e)); }
+    });
   }
 
   function showSaveLink(url, name, size) {
@@ -3720,18 +4403,29 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   async function shareOrDownload() {
+    // 全程用快照：分享面板/上传可能挂起数秒，期间若结果被新合并覆盖或 hideResult()
+    // 撤销了 object URL，旧实现会拿已失效的 URL 继续下载并报「成功」（F4）。
+    var src = state.mergedBlob;
+    if (!src) return;
     var url = ensureResultUrl();
     if (!url) return;
     var ext = state.mergedExt || 'wav';
-    var mime = (state.mergedBlob && state.mergedBlob.type) || 'audio/wav';
+    var mime = src.type || 'audio/wav';
     var filename = 'merged-' + nowStamp() + '.' + ext;
-    var size = state.mergedBlob ? state.mergedBlob.size : 0;
+    var size = src.size || 0;
     var isIOS = isIOSDevice();
 
-    // 1) 本地下载服务可用时优先：直链下载在 iOS 上最稳，且不必把整包读进内存
+    // 1) 本地下载服务可用时优先：直链下载在 iOS 上最稳，且不必把整包读进内存。
+    //    每次导出前重新探测（服务可能已关闭），失败则复位并继续走本机降级链。
     if (state.serverReady) {
-      uploadForDownload();
-      return;
+      var alive = await probeDownloadServer();
+      if (state.mergedBlob !== src) return;
+      if (alive) {
+        var uploaded = await uploadForDownload();
+        if (state.mergedBlob !== src) return;
+        if (uploaded) return;
+        setStatus('下载服务不可用，已切换为本机保存方式…');
+      }
     }
 
     /* 2) 系统分享优先 —— 这是 iOS 上不依赖电脑的唯一保存通道
@@ -3744,27 +4438,29 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
      *    另外不要用 navigator.canShare 作为门槛：部分 Safari 版本对 audio/* 文件
      *    返回 false，但实际 share 可正常工作，用 try/catch 实测更准。
      */
-    if (navigator.share && state.mergedBlob) {
+    if (navigator.share) {
       try {
-        /* 直接用已有的 mergedBlob 构造 File，不再 fetch(blobURL)：
+        /* 直接用已有的 blob 构造 File，不再 fetch(blobURL)：
          * 那条路会把整个结果在内存里再物化一份。OPFS 落盘的 File 没有 MIME type，
          * 必须包一层补上，否则部分系统的 share 会拒绝。 */
-        var src = state.mergedBlob;
         var file = (src instanceof File && src.type)
           ? src
           : new File([src], filename, { type: mime });
         // 大文件时原生面板要先把数据交出去，可能等几秒；没有提示容易被当成卡死
         setStatus('正在打开系统分享面板…' + (size > 60 * 1024 * 1024 ? '（文件较大，需等待几秒）' : ''));
         await navigator.share({ files: [file], title: '合并录音', text: filename });
+        if (state.mergedBlob !== src) return; // 分享期间结果已被替换：不覆盖新结果的状态
         setStatus('已打开系统分享面板：选「存储到文件」即可保存到「文件」App');
         return;
       } catch (e) {
+        if (state.mergedBlob !== src) return;
         if (e && e.name === 'AbortError') { setStatus('已取消分享'); return; }
         // 不支持 / 文件过大 / 权限被拒 → 继续降级，但不把错误直接抛给用户
       }
     }
 
     // 3) <a download>：iOS 13+ 对同源 blob URL 有效，失败时通常静默无反应
+    if (state.mergedBlob !== src) return; // URL 可能已被 hideResult() revoke
     var anchorOk = downloadViaAnchor(url, filename);
     if (anchorOk && !isIOS) {
       setStatus('已触发下载：' + filename);
@@ -3827,11 +4523,21 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       var li = segDrag.li;
       li.classList.remove('dragging');
       segDrag = null;
-      // 按 DOM 顺序同步数据层
-      var order = {};
+      // 先取当前 DOM 顺序；与数据层一致说明没有实际拖动（仅误触把手），
+      // 此时绝不能 renderList()——它会 hideResult() 清掉刚合并的结果。
+      var ids = [];
       Array.prototype.forEach.call($('segmentList').children, function (node) {
-        if (node.dataset && node.dataset.id) order[node.dataset.id] = Object.keys(order).length;
+        if (node.dataset && node.dataset.id) ids.push(node.dataset.id);
       });
+      var unchanged = ids.length === state.segments.length &&
+        state.segments.every(function (s, i) { return s.id === ids[i]; });
+      if (unchanged) {
+        // 期间若有被推迟的列表重建（解码完成等），这里补上；不误触 hideResult()
+        if (pendingRender) renderList(true);
+        return;
+      }
+      var order = {};
+      ids.forEach(function (id, i) { order[id] = i; });
       state.segments.sort(function (a, b) { return order[a.id] - order[b.id]; });
       renderList();
       setStatus('顺序已调整');
@@ -3922,6 +4628,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
 
     // 剪切范围输入（滑杆 / 数字框）：实时写回片段状态并就地刷新显示
     $('segmentList').addEventListener('input', function (e) {
+      if (state.busy) return; // 合并中 plan 已快照，改动只会让估算与结果不一致
       var input = e.target;
       if (!input.classList) return;
       var isRange = input.classList.contains('trim-range');
@@ -3929,23 +4636,31 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       if (!isRange && !isNum) return;
       var t = trimTargetFrom(input);
       if (!t) return;
-      var v = parseFloat(input.value);
-      if (!isFinite(v) || v < 0) return;
+      var parsed = parseFloat(input.value);
+      if (!isFinite(parsed) || parsed < 0) return;
+      // 数字框的 max 不会阻止 input 事件取到超大值，必须显式 clamp 到片段时长
+      var max = (typeof t.seg.duration === 'number' && t.seg.duration > 0) ? t.seg.duration : parsed;
+      var v = Math.min(parsed, max);
       if (t.which === 'start') t.seg.trimStart = v;
       else t.seg.trimEnd = v;
+      var shortClip = t.seg.duration > 0 && t.seg.duration < 1;
+      if (isNum && v !== parsed) input.value = v.toFixed(shortClip ? 3 : 1);
       refreshSegRow(t.seg);
     });
 
     bindSegDrag();
 
     $('formatGroup').addEventListener('click', function (e) {
+      if (state.busy) return; // 事件层兜底，防止禁用状态被绕过
       var btn = e.target.closest('.seg-btn');
       if (btn && !btn.disabled) setFormat(btn.dataset.fmt);
     });
 
     $('bitrateSel').addEventListener('change', function () {
+      if (state.busy) { this.value = String(state.bitrate); return; }
       state.bitrate = parseInt(this.value, 10) || 128;
       updateSizeEstimate();
+      updateFormatHint(); // 低位率的「反而更慢」提示需随选择实时刷新
     });
 
     $('segPlayer').addEventListener('ended', function () {

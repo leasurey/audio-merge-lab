@@ -166,15 +166,31 @@
     } catch (e) { return false; }
   }
 
+  /* CSP（script-src 未含 unsafe-eval）会禁止 new Function。旧实现把由此抛出的
+   * EvalError 当成「内核不支持 async」，给出「不兼容」的错误结论。
+   * 现在用 null 表示「受 CSP 限制无法判定」，单独显示为「受限」，不判致命。 */
+  function evalAllowed() {
+    try { return new Function('return 1')() === 1; } catch (e) { return false; }
+  }
+
   var probes = [
     { label: 'ES5 基础（本页能显示即为通过）', fn: function () { return true; } },
     { label: 'Promise', fn: function () { return typeof Promise === 'function'; } },
     { label: 'async / await 语法（ES2017）',
       note: '低于此线：应用无法解析，会显示启动失败提示',
-      fn: function () { return !!new Function('return (async function(){})'); } },
+      fn: function () {
+        if (!evalAllowed()) return null;
+        try { return !!new Function('return (async function(){})'); } catch (e) { return false; }
+      } },
     { label: 'for await 语法（ES2018）',
       note: '应用已不使用该语法，仅作参考',
-      fn: function () { return !!new Function('return (async function(){ for await (var x of []) {} })'); } },
+      fn: function () {
+        if (!evalAllowed()) return null;
+        try { return !!new Function('return (async function(){ for await (var x of []) {} })'); } catch (e) { return false; }
+      } },
+    { label: '动态代码执行（eval / new Function）',
+      note: '仅 MP3 内置兜底解码需要；被 CSP 禁用时该降级路径不可用，主功能不受影响',
+      fn: evalAllowed },
     { label: 'Web Audio（AudioContext）',
       note: '解码与合并的基础，缺失则完全不可用',
       fn: hasAudioContext },
@@ -212,18 +228,24 @@
   var results = [];
   var passCount = 0;
   var failCount = 0;
+  var unknownCount = 0;
   var ul = document.getElementById('probes');
 
   function runProbe(p) {
     var ok = false;
-    try { ok = !!p.fn(); } catch (e) { ok = false; }
+    try {
+      var v = p.fn();
+      ok = v === null ? null : !!v; // null = 受 CSP 限制，无法判定
+    } catch (e) { ok = false; }
     results.push({ label: p.label, ok: ok, note: p.note || '' });
-    if (ok) passCount++; else failCount++;
+    if (ok === null) unknownCount++;
+    else if (ok) passCount++;
+    else failCount++;
 
     var li = document.createElement('li');
     var tag = document.createElement('span');
-    tag.className = 'tag ' + (ok ? 'pass' : 'fail');
-    tag.textContent = ok ? '支持' : '缺失';
+    tag.className = 'tag ' + (ok === null ? 'na' : (ok ? 'pass' : 'fail'));
+    tag.textContent = ok === null ? '受限' : (ok ? '支持' : '缺失');
     li.appendChild(tag);
     var body = document.createElement('div');
     body.className = 'p-label';
@@ -241,7 +263,10 @@
 
   function resultOf(prefix) {
     for (var j = 0; j < results.length; j++) {
-      if (results[j].label.indexOf(prefix) === 0) return results[j].ok;
+      if (results[j].label.indexOf(prefix) === 0) {
+        // 「受限」不是「不支持」：不能据此判定浏览器内核过旧
+        return results[j].ok !== false;
+      }
     }
     return false;
   }
@@ -275,6 +300,9 @@
       text = '可用，但部分功能受限';
       detail = '缺失：' + missing.join('、') + '。合并不受影响；长音频（40 分钟以上）在无 OPFS 时会走内存拼接，应用会先弹窗提示。';
     }
+  }
+  if (unknownCount > 0) {
+    detail += ' 另有 ' + unknownCount + ' 项因站点 CSP 禁止动态代码执行而无法探测（显示「受限」），请以主页面能否正常打开为准。';
   }
   verdict.className = 'verdict ' + level;
   verdict.innerHTML = '';
