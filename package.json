@@ -1,17 +1,17 @@
 {
   "name": "audio-merge-lab",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "private": true,
   "author": "k",
   "description": "跨平台录音合并工具（iOS / Android / Web，纯本地处理，WAV/MP3/M4A 输出）",
   "scripts": {
     "build": "node tools/build.js",
     "serve": "node tools/serve.js",
-    "test": "node test/core.test.js && node test/mp3.test.js && node test/serve.test.js",
-    "verify": "python test/verify_wav.py",
+    "test": "node tools/build.js && node test/core.test.js && node test/mp3.test.js && node test/serve.test.js && node test/ui.test.js",
+    "verify": "npm test && python test/verify_wav.py",
     "cap:sync": "npm run build && cap sync",
-    "cap:add:android": "cap add android",
-    "cap:add:ios": "cap add ios",
+    "cap:add:android": "npm run build && cap add android",
+    "cap:add:ios": "npm run build && cap add ios",
     "cap:open:android": "cap open android",
     "cap:open:ios": "cap open ios"
   },
@@ -21,6 +21,7 @@
     "@capacitor/ios": "^8.5.3"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.5.3"
+    "@capacitor/cli": "^8.5.3",
+    "playwright-core": "^1.49.0"
   }
 }

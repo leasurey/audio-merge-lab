@@ -294,6 +294,184 @@ test('buildWavHeader: 不支持的位深抛错', () => {
   assert.throws(() => Core.buildWavHeader(10, 44100, 2, 12));
 });
 
+test('buildWavHeader: 超过 RIFF 4GB 上限时明确拒绝（防静默截断）', () => {
+  // 立体声 16bit：36+dataSize 比 dataSize 更早溢出，两个阈值都要拦住
+  assert.throws(() => Core.buildWavHeader(1073741815, 44100, 2, 16), /RIFF/);
+  assert.throws(() => Core.buildWavHeader(1073741824, 44100, 2, 16), /RIFF/);
+  assert.throws(() => Core.buildWavHeader(1200000000, 44100, 2, 16), /RIFF/);
+});
+
+test('buildWavHeader: 上限内长度字段不被截断', () => {
+  const frames = 100000000; // 400 MB，远低于上限
+  const header = Core.buildWavHeader(frames, 44100, 2, 16);
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+  assert.strictEqual(view.getUint32(40, true), frames * 4);
+  assert.strictEqual(view.getUint32(4, true), 36 + frames * 4);
+});
+
+test('effectiveDurationSec: 正常剪切区间返回保留时长', () => {
+  assert.strictEqual(Core.effectiveDurationSec(10, 2, 8), 6);
+  assert.strictEqual(Core.effectiveDurationSec(10), 10);
+  assert.strictEqual(Core.effectiveDurationSec(10, 0, 10), 10);
+  assert.strictEqual(Core.effectiveDurationSec(0, 0, 10), 0);
+});
+
+test('effectiveDurationSec: 无效区间回退整段，不返回 0 或负值', () => {
+  // 旧实现：end<=start 返回 0；start>dur 返回负值 —— 与 planMerge 实际输出相反
+  [[5, 3], [5, 5], [0, 0], [99, 100]].forEach(([s, e]) => {
+    assert.strictEqual(Core.effectiveDurationSec(10, s, e), 10, `start=${s} end=${e}`);
+  });
+  // 负起点 clamp 到 0、非数端点取默认整段——与 segTrimFrames 的 clamp 行为一致
+  assert.strictEqual(Core.effectiveDurationSec(10, -1, 3), 3);
+  assert.strictEqual(Core.effectiveDurationSec(10, 2, NaN), 8);
+  assert.strictEqual(Core.effectiveDurationSec(10, NaN, 8), 8);
+  assert.ok(Core.effectiveDurationSec(10, 99, 100) >= 0);
+});
+
+// 注意：app.js 的 segTrimFrames 是 DOM 模块私有函数，Node 侧无法直接调用；
+// 本例验证的是「无效区间回退整段」这一契约与整段 planMerge 的输出一致。
+test('effectiveDurationSec: 无效区间回退整段后与整段 planMerge 帧数一致', () => {
+  const rate = 44100, len = rate * 10;
+  const pcm = { sampleRate: rate, channels: [new Float32Array(len)] };
+  const plan = Core.planMerge(
+    [{ name: 'x', pcm: pcm, trimStart: 0, trimEnd: len }],
+    { targetSampleRate: rate, targetChannels: 1, gapSec: 0, fadeMs: 8 }
+  );
+  // 无效区间 → 界面显示整段；segTrimFrames 回退 {0,len} → 实际输出整段
+  assert.strictEqual(Core.effectiveDurationSec(10, 5, 3), plan.totalFrames / rate);
+  assert.strictEqual(Core.effectiveDurationSec(10, 99, 100), plan.totalFrames / rate);
+});
+
+/* ---------- 短音频：警告但保留 ---------- */
+test('assessShortAudio: 0 帧 / 非数 / 负时长判为无效', () => {
+  [0, -1, NaN, Infinity, undefined].forEach((d) => {
+    const r = Core.assessShortAudio(d, 0.05);
+    assert.strictEqual(r.valid, false, 'duration=' + d);
+    assert.strictEqual(r.warning, null);
+  });
+});
+
+test('assessShortAudio: 极短但有效的结果保留并给出试听警示', () => {
+  const r = Core.assessShortAudio(0.03, 0.05);
+  assert.strictEqual(r.valid, true);
+  assert.ok(r.warning && r.warning.indexOf('试听') !== -1, String(r.warning));
+});
+
+test('assessShortAudio: 达到阈值、正常时长、无效阈值均无警示', () => {
+  assert.deepStrictEqual(Core.assessShortAudio(0.05, 0.05), { valid: true, warning: null });
+  assert.deepStrictEqual(Core.assessShortAudio(10, 0.05), { valid: true, warning: null });
+  assert.deepStrictEqual(Core.assessShortAudio(0.03, 0), { valid: true, warning: null });
+});
+
+/* ---------- 目标声道数与单/双声道写出正确性 ---------- */
+test('pickTargetChannels: 全单声道→1，混合/立体声/空/异常→2', () => {
+  const mono = { pcm: { channels: [new Float32Array(4)] } };
+  const stereo = { pcm: { channels: [new Float32Array(4), new Float32Array(4)] } };
+  assert.strictEqual(Core.pickTargetChannels([mono, mono]), 1);
+  assert.strictEqual(Core.pickTargetChannels([mono, stereo]), 2);
+  assert.strictEqual(Core.pickTargetChannels([stereo, stereo]), 2);
+  assert.strictEqual(Core.pickTargetChannels([]), 2);
+  assert.strictEqual(Core.pickTargetChannels(null), 2);
+  assert.strictEqual(Core.pickTargetChannels([{ pcm: null }]), 2);
+  assert.strictEqual(Core.pickTargetChannels([{ pcm: { channels: [] } }]), 2);
+  // 流式合并会逐段释放 pcm；解码时保存的 channels 仍在，判定必须保持稳定
+  assert.strictEqual(Core.pickTargetChannels([
+    { pcm: null, channels: 1 }, { pcm: null, channels: 1 }
+  ]), 1, 'PCM 释放后不应翻转成立体声');
+  assert.strictEqual(Core.pickTargetChannels([{ pcm: null, channels: 2 }]), 2);
+});
+
+test('segmentPeakAfterFade: 只统计剪切区间，被剪掉的响段不拉低增益', () => {
+  const rate = 44100, len = rate * 2;
+  const ch = new Float32Array(len);
+  for (let i = 0; i < rate; i++) ch[i] = 0.1 * Math.sin(2 * Math.PI * 440 * i / rate);
+  for (let i = rate; i < len; i++) ch[i] = 1.0 * Math.sin(2 * Math.PI * 440 * i / rate);
+  const pcm = { sampleRate: rate, channels: [ch] };
+  const full = Core.segmentPeakAfterFade(pcm, rate, 1, 8);
+  const trimmed = Core.segmentPeakAfterFade(pcm, rate, 1, 8, 0, rate);
+  assert.ok(trimmed < 0.2, '剪切后峰值应约 0.1，实际 ' + trimmed);
+  assert.ok(full > 0.8, '整段峰值应约 1.0，实际 ' + full);
+  assert.ok(0.89 / trimmed > 0.89 / full, '漏传剪切区间会系统性压低归一化增益');
+});
+
+/** 复刻 streamMerge 的写出管线：planMerge → 转换 → 交织 → 头部，产出完整 WAV */
+function buildStreamWav(pcmList, targetChannels) {
+  const rate = 44100;
+  const plan = Core.planMerge(
+    pcmList.map((pcm, i) => ({ name: 's' + i, pcm: pcm })),
+    { targetSampleRate: rate, targetChannels: targetChannels, gapSec: 0, fadeMs: 8 }
+  );
+  const parts = [Core.buildWavHeader(plan.totalFrames, rate, targetChannels, 16)];
+  plan.parts.forEach((part) => {
+    const conv = Core.createSegmentConverter(pcmList[part.index], {
+      targetRate: rate, targetChannels: targetChannels, gain: 1, fadeMs: 8,
+      srcStart: part.trimStart, srcEnd: part.trimEnd, int16: true
+    });
+    const chs = [];
+    for (let c = 0; c < targetChannels; c++) chs.push(new Int16Array(part.outFrames));
+    conv.convert(0, part.outFrames, chs);
+    parts.push(Core.interleaveInt16WavChunk(chs, targetChannels, part.outFrames));
+  });
+  const wav = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+  let off = 0;
+  parts.forEach((p) => { wav.set(p, off); off += p.length; });
+  return { wav: wav, plan: plan };
+}
+
+function sineMono(freq, amp, frames, rate) {
+  const ch = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) ch[i] = amp * Math.sin(2 * Math.PI * freq * i / rate);
+  return { sampleRate: rate, channels: [ch] };
+}
+
+test('单声道流式 WAV: 头部各字段与实际数据长度完全一致且可回读', () => {
+  const rate = 44100, frames = 1000;
+  const pcm = sineMono(440, 0.5, frames, rate);
+  const { wav, plan } = buildStreamWav([pcm], 1);
+  const v = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  assert.strictEqual(v.getUint16(22, true), 1);                 // numChannels
+  assert.strictEqual(v.getUint32(24, true), rate);              // sampleRate
+  assert.strictEqual(v.getUint32(28, true), rate * 2);          // byteRate
+  assert.strictEqual(v.getUint16(32, true), 2);                 // blockAlign
+  assert.strictEqual(v.getUint16(34, true), 16);                // bitDepth
+  assert.strictEqual(v.getUint32(40, true), plan.totalFrames * 2);
+  assert.strictEqual(v.getUint32(4, true), 36 + plan.totalFrames * 2);
+  assert.strictEqual(wav.length, 44 + plan.totalFrames * 2);
+  const back = Core.decodeWav(wav);
+  assert.strictEqual(back.channels.length, 1);
+  assert.strictEqual(back.sampleRate, rate);
+  assert.strictEqual(back.channels[0].length, plan.totalFrames);
+  // 中段不受淡变影响，样本值应与源一致（量化误差内）
+  assert.ok(Math.abs(back.channels[0][500] -
+    0.5 * Math.sin(2 * Math.PI * 440 * 500 / rate)) < 0.01);
+});
+
+test('混合声道输入统一上混立体声: 头部与数据一致，不会逐段变声道', () => {
+  const rate = 44100, frames = 800;
+  const mono = sineMono(440, 0.5, frames, rate);
+  const stereo = sineMono(880, 0.25, frames, rate);
+  stereo.channels.push(Float32Array.from(stereo.channels[0]));
+  assert.strictEqual(Core.pickTargetChannels([{ pcm: mono }, { pcm: stereo }]), 2);
+  const { wav, plan } = buildStreamWav([mono, stereo], 2);
+  const v = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  assert.strictEqual(v.getUint16(22, true), 2);
+  assert.strictEqual(v.getUint32(28, true), rate * 4);
+  assert.strictEqual(v.getUint16(32, true), 4);
+  assert.strictEqual(v.getUint32(40, true), plan.totalFrames * 4);
+  assert.strictEqual(wav.length, 44 + plan.totalFrames * 4);
+  const back = Core.decodeWav(wav);
+  assert.strictEqual(back.channels.length, 2);
+  assert.strictEqual(back.channels[0].length, plan.totalFrames);
+});
+
+test('集成: 写出单声道 WAV 供 Python wave 模块交叉校验', () => {
+  const rate = 44100, frames = 110250; // 2.5 秒
+  const { wav, plan } = buildStreamWav([sineMono(440, 0.5, frames, rate)], 1);
+  fs.writeFileSync(path.join(OUT_DIR, 'merge-mono-test.wav'),
+    Buffer.from(wav.buffer, wav.byteOffset, wav.byteLength));
+  assert.strictEqual(wav.length, 44 + plan.totalFrames * 2);
+});
+
 test('conformedFrameCount: 与 conformPcm+resampleChannel 长度一致', () => {
   const cases = [[100, 8000, 44100], [44100, 44100, 44100], [48000, 48000, 44100], [1, 48000, 44100], [0, 44100, 44100]];
   for (const [len, from, to] of cases) {
@@ -788,6 +966,54 @@ test('流式分块写出 == 一次性 encodeWav（WAV 内容逐字节一致）',
   let off = 0;
   for (const p of parts) { merged.set(p, off); off += p.length; }
   assert.deepStrictEqual(Array.from(merged), Array.from(whole), '流式内容应与一次性编码逐字节一致');
+});
+
+/* ---------- 公共 API 数值边界（第三轮后续修复回归） ---------- */
+test('mergeOptions: 拒绝 NaN / 负值 / 无穷大 / 非法声道数', () => {
+  assert.throws(() => Core.mergeOptions({ gapSec: NaN }), /gapSec/);
+  assert.throws(() => Core.mergeOptions({ gapSec: -1 }), /gapSec/);
+  assert.throws(() => Core.mergeOptions({ targetSampleRate: 0 }), /targetSampleRate/);
+  assert.throws(() => Core.mergeOptions({ fadeMs: Infinity }), /fadeMs/);
+  assert.throws(() => Core.mergeOptions({ targetChannels: 3 }), /targetChannels/);
+  assert.throws(() => Core.mergeOptions({ normalizeTarget: 2 }), /normalizeTarget/);
+  const ok = Core.mergeOptions({ targetChannels: 1, gapSec: 0.5 });
+  assert.strictEqual(ok.targetChannels, 1);
+  assert.strictEqual(ok.fadeMs, Core.DEFAULTS.fadeMs);
+});
+
+test('createSegmentConverter: 拒绝 >2 目标声道，源声道不足时补最后一声道', () => {
+  const src = { sampleRate: 44100, channels: [new Float32Array([0.5, 0.5, 0.5])] };
+  assert.throws(() => Core.createSegmentConverter(src, { targetRate: 44100, targetChannels: 3 }),
+    /只支持 1 或 2/);
+  assert.throws(() => Core.createSegmentConverter({ sampleRate: 44100, channels: [] },
+    { targetRate: 44100, targetChannels: 2 }), /源 PCM 为空/);
+  const conv = Core.createSegmentConverter(src, { targetRate: 44100, targetChannels: 2 });
+  const l = new Float32Array(3), r = new Float32Array(3);
+  assert.strictEqual(conv.convert(0, 3, [l, r]), 3);
+  assert.ok(Math.abs(l[0] - 0.5) < 1e-6 && Math.abs(r[0] - 0.5) < 1e-6,
+    '单声道上混立体声时右声道不能是 NaN/0');
+});
+
+test('decodeWav: IEEE float 头配 16bit 必须报错，不得静默产出全静音', () => {
+  assert.throws(() => Core.decodeWav(makeWavWithFormat(3, { bits: 16 })), /IEEE float WAV 位深不支持/);
+  assert.strictEqual(Core.decodeWav(makeWavWithFormat(3, { bits: 64 })).channels[0].length, 200);
+});
+
+test('decodeWav: 8bit 无符号满幅对称映射到 ±1', () => {
+  // 手工构造 1 声道 / 8bit / 4 帧：0, 127, 128, 255
+  const buf = new Uint8Array(44 + 4);
+  const dv = new DataView(buf.buffer);
+  const wr = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  wr(0, 'RIFF'); dv.setUint32(4, 36 + 4, true); wr(8, 'WAVE');
+  wr(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true); dv.setUint32(24, 8000, true);
+  dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true);
+  wr(36, 'data'); dv.setUint32(40, 4, true);
+  buf[44] = 0; buf[45] = 127; buf[46] = 128; buf[47] = 255;
+  const out = Core.decodeWav(buf).channels[0];
+  assert.ok(Math.abs(out[0] + 1) < 1e-6, '0 应映射到 -1，实际 ' + out[0]);
+  assert.ok(Math.abs(out[3] - 1) < 1e-6, '255 应映射到 +1，实际 ' + out[3]);
+  assert.ok(Math.abs(out[1] - out[2]) < 0.02, '中点两侧应基本对称');
 });
 
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

@@ -51,15 +51,43 @@ const leftover = inject.map(([t]) => t).filter((t) => html.includes(t));
 if (leftover.length > 0) {
   throw new Error('占位符替换不完整: ' + leftover.join(', '));
 }
-for (const vendorFile of ['src/vendor/lame.min.js', 'src/vendor/mpg123-decoder.min.js']) {
-  if (/<script/i.test(read(vendorFile))) {
-    throw new Error(vendorFile + ' 含 <script，内联不安全');
+/* 内联安全检查：真正会让 HTML 解析器提前闭合的是「闭合序列」，
+ * 旧检查用 /<script/i 对 '</script>' 返回 false，等于完全没查；
+ * 且只检查两个 vendor，自有源码与 CSS 原文也会被内联，必须一并覆盖。 */
+const inlinedSources = [
+  'src/boot-guard.js',
+  'src/vendor/lame.min.js',
+  'src/vendor/mpg123-decoder.min.js',
+  'src/audio-core.js',
+  'src/app.js',
+  'src/styles.css'
+];
+for (const file of inlinedSources) {
+  const src = read(file);
+  if (/<\/script/i.test(src) || /<\/style/i.test(src)) {
+    throw new Error(file + ' 含 </script 或 </style 序列，内联会提前闭合标签');
+  }
+  if (/<script/i.test(src)) {
+    throw new Error(file + ' 含 <script 序列，内联不安全');
   }
 }
 // 终局校验：产物不得含 NUL（HTML 解析器会把它替换成 U+FFFD）
 if (html.indexOf('\u0000') !== -1) {
   throw new Error('产物含 NUL 字符：内联的脚本会被 HTML 解析器破坏');
 }
+
+/* 第三方许可文本随单文件产物分发（D11）：
+ * dist/index.html 常常被单独转发/离线保存，接收方拿不到仓库里的
+ * THIRD-PARTY-NOTICES.md 与 LICENSE。这里把两者以 HTML 注释内联，
+ * 并同时复制成独立文件，满足 lamejs(LGPL-3.0) / mpg123-decoder(MIT)
+ * 的署名与许可告知要求；转义注释定界符，避免提前闭合。 */
+const noticesText = read('THIRD-PARTY-NOTICES.md');
+const licenseText = read('LICENSE');
+const noticeBlock = (noticesText + '\n\n' + licenseText)
+  .replace(/<!--/g, '<! --').replace(/-->/g, '-- >');
+if (!html.includes('</head>')) throw new Error('模板中未找到 </head>，无法内联许可声明');
+html = html.replace('</head>', () =>
+  '\n<!-- Audio Merge Lab · 第三方组件许可声明（随产物分发）\n' + noticeBlock + '\n-->\n</head>');
 // 启动守卫必须保持纯 ES5：它要在旧内核里执行（旧内核解析不了 app.js 的 ES2017 语法）
 const guardSrc = read('src/boot-guard.js');
 for (const bad of [/=>/, /\bconst\s/, /\blet\s/, /`/]) {
@@ -76,6 +104,9 @@ fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webm
 fs.copyFileSync(path.join(root, 'compat.html'), dist('compat.html'));
 fs.copyFileSync(path.join(root, 'guide.html'), dist('guide.html'));
 fs.copyFileSync(path.join(root, 'convert.html'), dist('convert.html'));
+// 独立许可文件：静态托管时可直接访问，不依赖单文件 HTML 的注释
+fs.copyFileSync(path.join(root, 'THIRD-PARTY-NOTICES.md'), dist('THIRD-PARTY-NOTICES.md'));
+fs.copyFileSync(path.join(root, 'LICENSE'), dist('LICENSE'));
 
 // sw.js 缓存名注入 APP_VERSION：缓存名随版本变化，旧缓存自动清除
 const coreSrc = read('src/audio-core.js');
@@ -196,6 +227,15 @@ iconSizes.push(['icon-192.png', writeIcon('icon-192.png', 192, {})]);
 iconSizes.push(['icon-512.png', writeIcon('icon-512.png', 512, {})]);
 iconSizes.push(['icon-maskable-512.png', writeIcon('icon-maskable-512.png', 512, { fullBleed: true, maskable: true })]);
 iconSizes.push(['apple-touch-icon.png', writeIcon('apple-touch-icon.png', 180, { fullBleed: true })]);
+
+// 清掉本脚本过去生成、现已不在清单里的旧图标，避免 dist 里堆积过期资源；
+// 只删 icons/ 下的 .png，绝不递归删除目录，也不碰使用者自己放的文件。
+const wantedIcons = new Set(iconSizes.map((entry) => entry[0]));
+for (const old of fs.readdirSync(dist('icons'))) {
+  if (/\.png$/i.test(old) && !wantedIcons.has(old)) {
+    fs.unlinkSync(path.join(dist('icons'), old));
+  }
+}
 
 /* ---------------- 汇总 ---------------- */
 const kb = (n) => (n / 1024).toFixed(1) + ' KB';

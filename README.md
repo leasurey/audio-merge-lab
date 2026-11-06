@@ -6,7 +6,7 @@
 
 导入或录下多段音频，按顺序合并为一个 WAV / MP3 / M4A —— 全程在你的设备本地完成，数据不经过任何服务器。
 
-[![Version](https://img.shields.io/badge/version-0.4.2-4f8cff)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-4f8cff)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web%20·%20iOS%20·%20Android-a371f7)](#-兼容性)
 [![Privacy](https://img.shields.io/badge/隐私-纯本地不上传-ff6b6b)](#-已知限制)
@@ -29,6 +29,7 @@
 - **一键复制片段**：同一段音频要重复出现时直接复制，共享数据不额外占内存
 - **拖拽排序**：按住左侧把手拖动调整顺序（Pointer Events，鼠标与触摸通用）
 - **三种输出**：WAV（无损）/ MP3（96–320 kbps，分块编码 + 进度 + 可取消，**默认**）/ M4A（AAC 实时录制）
+- **自动单声道**：输入片段全是单声道时，输出就是单声道，省掉一半编码量（30 秒素材实测 6.0s → 2.6s）；混合输入仍上混立体声，不会出现只写一边声道的错位
 - **灵活拼接**：片段间隔 0–3 秒可调、首尾淡变防爆音、可选峰值归一化（统一各段音量）
 - **长音频友好**：流式合并 + OPFS 磁盘落盘，两个 40 分钟文件合并内存峰值从 ~4GB 降到 ~200MB
 - **解码降级链**：平台解不动的 WAV / MP3 自动换内置解析器（V0.3.5 起真正生效），不支持格式精确报名并给转换建议
@@ -89,7 +90,7 @@ node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
 | 格式 | 特点 | 适合 |
 |---|---|---|
 | **WAV**（推荐） | 无损，约 10 MB/分钟，合并几乎瞬间完成 | 存档、二次剪辑、音质优先 |
-| **MP3** | 体积约 WAV 的 1/10；10 分钟音频约需 1–2 分钟编码，可取消 | 发给别人、上传平台 |
+| **MP3** | 体积约 WAV 的 1/10；10 分钟音频约需 1–2 分钟编码，可取消；全单声道素材会自动按单声道编码 | 发给别人、上传平台 |
 | **M4A** | 体积小；实时编码（耗时与音频等长，需保持前台） | 苹果生态 |
 
 ## 🧩 兼容性
@@ -119,6 +120,20 @@ node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
 - 压缩 WAV（A-law / ADPCM / MPEG 等）明确报错，绝不按 PCM 硬解析产出噪声
 - 文件损坏（平台只解出几十毫秒）会转内置解码并在列表显示**黄色警示行**，请试听后决定去留，不会静默丢失
 - 失败信息包含文件大小、检测格式与建议，例如：`检测为 MP3（MPEG Layer III，含 ID3 标签）`
+
+### 合并速度
+
+MP3 编码是 CPU 密集型操作，本版做了三件事让它更快：
+
+| 措施 | 效果 |
+|---|---|
+| **自动单声道** | 全单声道输入按 1 声道编码，编码量直接减半 |
+| **后台让出改用 `MessageChannel`** | 安卓上 `setTimeout` 在后台标签页会被节流到 1 秒，改用消息通道后合并在后台也持续推进（带 1 秒超时兜底，不会卡死） |
+| **进度刷新节流 80ms** | 减少高频 DOM 写入 |
+
+基准（Node 20，30 秒单声道素材，128 kbps）：**6035ms → 2648ms，耗时 −56%**，
+已在 Windows 10 Edge 实测确认方向一致。这是桌面环境的数字，安卓上的实际收益还看机型；
+另外位率越低**并不**越快——96 kbps 实测约慢 2.9×，所以选项上标了「编码较慢」。
 
 ## ❓ 常见问题
 
@@ -179,6 +194,8 @@ V0.4.2 之前有一个「体积 > 80MB 就直接交给播放器」的提前返�
 - M4A 为实时编码（耗时与音频等长），且依赖浏览器 mp4 录制能力，不支持时选项自动隐藏
 - 桌面 Chrome 不支持 AAC 解码（m4a 导入在 iOS / Android 上正常）
 - 只做顺序拼接 + 间隔 + 淡变 + 归一化 + 单段剪切（✂ 自定义起止，按源帧区间零拷贝读取，不生成裁剪副本）；变速、交叉淡入淡出不在范围内
+- **输出声道数由输入决定**：全部片段为单声道时输出单声道，任何一个片段是立体声就整次输出立体声——不支持「强制单声道」或「强制立体声」的手动开关
+- 自动单声道与后台让出的收益**只在桌面 Edge 实测过**，安卓各机型的实际改善仍需真机数据；如需自检本机能力，打开 [`compat.html`](compat.html)
 - `dist/` 不入库，克隆后需先 `node tools/build.js`
 - **iOS 保存**：没有稳定的前端保存通道（系统播放器无保存入口、`a[download]` 行为反复）。
   默认的「分享」可用（含「存储到文件」）；要更稳的直链保存，需自己在本机跑 `tools/serve.js`
@@ -191,14 +208,14 @@ V0.4.2 之前有一个「体积 > 80MB 就直接交给播放器」的提前返�
 │   ├─ audio-core.js        核心逻辑（纯函数 UMD）：重采样/拼接/淡变/归一化/WAV/MP3 编码/嗅探/兜底解码
 │   │                       ← APP_VERSION 单一权威值在此
 │   ├─ app.js               UI 层：导入、录音、试听、流式合并、导出分享
-│   ├─ styles.css           深色主题、移动端优先
+│   ├─ styles.css           iOS 风格明暗双主题、移动端优先
 │   ├─ boot-guard.js        ES5 启动守卫（旧内核白屏兜底）
 │   ├─ manifest.webmanifest / sw.js    PWA 清单与离线缓存
 │   └─ vendor/              lamejs（MP3 编码）+ mpg123-decoder（MP3 WASM 解码），来源与许可证见 THIRD-PARTY-NOTICES.md
 ├─ index.template.html      页面骨架（构建占位符）
 ├─ tools/build.js           构建：内联单文件 + PWA 资源 + 图标生成
 ├─ tools/serve.js           可选的局域网自托管服务：静态页 + 上传/下载直链（npm run serve）
-├─ test/                    51 项核心单测 + 9 项 MP3 功能测试 + 24 项下载服务端到端测试 + Python 交叉校验
+├─ test/                    155 项自动测试（核心 68 + MP3 12 + 服务端 56 + 主页/构建契约 19）+ Python 交叉校验
 ├─ compat.html / guide.html / convert.html   自检 / 指南 / 转换页
 ├─ capacitor.config.json    Capacitor 打包配置（webDir → dist）
 └─ CHANGELOG.md · LICENSE · THIRD-PARTY-NOTICES.md · 使用说明.md
@@ -207,26 +224,30 @@ V0.4.2 之前有一个「体积 > 80MB 就直接交给播放器」的提前返�
 **合并管线**：
 
 ```text
-文件/录音 → decodeAudioData（失败则降级链）→ 统一采样率/声道
+文件/录音 → decodeAudioData（失败则降级链）→ 统一采样率
+        → pickTargetChannels（全单声道→1，否则→2；整次合并只算一次）
         → planMerge + createSegmentConverter（无状态分帧，流式直写）
         → encodeWav / encodeMP3(lamejs) / encodeM4A(MediaRecorder)
         → OPFS 磁盘文件或内存 Blob → 试听 / 分享 / 下载
 ```
 
 为什么先解码再拼接：压缩音频直接拼字节流只在各段编码参数完全一致时才安全，录音文件参数各异，走 PCM 是唯一稳妥路线。
+声道也必须在合并前统一：混合输入一律上混为立体声，只有全部为单声道时才按单声道输出——否则会出现某段只写一边声道的错位（这正是「同样的错误不要犯两次」的那类根本问题）。
 
 ## 🧪 开发
 
 ```bash
 node tools/build.js                                  # 构建（单文件 HTML + PWA + 图标）
-npm test                                             # 51 + 9 + 24 项测试
+npm test                                             # 155 项测试（含构建与主页契约检查）
+npm run verify                                       # 上面全部 + Python 双路 WAV 校验
 node tools/serve.js                                  # 可选：启动局域网下载服务（默认 8010）
-python test/verify_wav.py                            # Python wave 模块交叉校验 WAV 产物
+python test/verify_wav.py                            # 单独跑 Python wave 模块交叉校验
 ```
 
 - 核心逻辑（`audio-core.js`）为纯函数，可在 Node 直接单测；UI 层（`app.js`）与核心分离
 - 构建期校验：ES2017 / ES5 语法基线（acorn）、产物无 NUL 字节、vendor 文件无 `<script>`
-- 测试不止"有输出"：MP3 测试解析真实帧头验证同步字/位率/采样率；WAV 用 Python 标准库交叉校验
+- 测试不止"有输出"：MP3 测试解析真实帧头验证同步字/位率/声道模式（单声道必须为 3）；WAV 用 Python 标准库交叉校验，缺单声道产物会直接报错
+- `test/ui.test.js` 锁主页契约：构建占位符、`app.js` 引用的 DOM id、明暗两套 `color-scheme`、下拉框配色、窄屏布局、许可文本随产物分发——改样式或改模板破坏契约会立刻失败
 
 ### 打包为原生 App（Roadmap）
 

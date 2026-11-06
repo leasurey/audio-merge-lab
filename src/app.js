@@ -34,16 +34,20 @@
     mergedBlob: null,
     mergedUrl: null,
     mergedExt: 'mp3',
-    mergedOpfsName: null, // 当前结果对应的 OPFS 文件名（清理时保留）
+    recordPending: false, // 录音权限请求进行中（防止连点产生多个 MediaRecorder/流）
     serverReady: false    // 是否检测到局域网下载服务（tools/serve.js）
   };
 
   // 拖拽排序状态（pointer events，一套代码兼容鼠标与触摸）
   var segDrag = null; // {id, li, pointerId}
+  var pendingRender = false; // 拖拽期间被推迟的列表重建
 
   var decodeQueue = [];    // 待解码片段队列（顺序执行，控制内存峰值）
   var decodeRunning = false;
   var warmStarted = false; // 音频管线预热只做一次
+
+  // 上传通道：双入口（分享按钮 / 保存链接按钮）共用一把锁，且必须可超时、可取消
+  var uploadState = { xhr: null, busy: false };
 
   // 预热燃料：0.1 秒 128kbps MPEG-1 Layer III（FF FB 头，与真实文件同解码路径）。
   // 由 tools 生成脚本用官方 lamejs 编码后内联，仅用于预热，解码后即丢弃。
@@ -98,8 +102,10 @@
    * 这种结果完全不可用，但走的是成功分支（连承promise 都 resolve），
    * 于是用户看到「已解码 0:00」，合并时又被 planMerge 静默跳过：那一段无声无息消失。
    *
-   * 0.05 秒（约 2400 帧 @48kHz）足以覆盖这类垃圾解码，同时远离任何真实录音的
-   * 最短长度（正常使用不会出现 50 毫秒以内的音频片段）。
+   * 0.05 秒（约 2400 帧 @48kHz）是「警示阈值」而不是拒绝阈值：
+   * 极短但非零的结果统一「警告但保留」——合法短音效不该被误杀，损坏文件解出的
+   * 噪声则通过列表里的黄色警示行交用户试听判断。只有 0 帧 / 非数时长才转降级链
+   * 或报错（见 AudioCore.assessShortAudio）。
    */
   var MIN_VALID_SEC = 0.05;
 
@@ -113,13 +119,43 @@
     return e;
   }
 
+  function isAndroid() {
+    return /Android/i.test(navigator.userAgent || '');
+  }
+
   function nextFrame() {
     return new Promise(function (r) {
       /* 后台标签页里 rAF 完全停摆——切后台/锁屏时合并会卡住不动，直到回到前台。
-       * setTimeout 在后台虽被节流（约 1 秒/次）但仍能推进，让合并不至于纹丝不动。
-       * 前台仍走 rAF（与屏幕刷新同步，进度更平滑）。 */
-      if (typeof document !== 'undefined' && document.hidden) setTimeout(r, 0);
-      else if (window.requestAnimationFrame) requestAnimationFrame(function () { r(); });
+       * setTimeout 在后台虽被节流（约 1 秒/次）但仍能推进；长音频里每 8 块让出一次，
+       * 累积起来可能是数分钟纯等待。
+       * 安卓优先优化：MessageChannel 的 task 不依赖 timer 节流，能大幅减少后台等待；
+       * 仅安卓启用，iOS 保持原路径，且创建失败时自动回退到 setTimeout。 */
+      if (typeof document !== 'undefined' && document.hidden) {
+        if (isAndroid() && typeof MessageChannel === 'function') {
+          var ch = null, fallback = null;
+          try {
+            ch = new MessageChannel();
+            /* 必须有超时兜底：后台 task 队列可能被冻结/BFCache，消息永不派发时
+               若只靠 onmessage，Promise 永不 settle → 合并永久卡死、结果丢失。
+               timer 与 onmessage 谁先到谁生效（Promise resolve 幂等）。 */
+            fallback = setTimeout(function () {
+              try { ch.port1.close(); ch.port2.close(); } catch (e) { /* 忽略 */ }
+              r();
+            }, 1000);
+            ch.port1.onmessage = function () {
+              clearTimeout(fallback);
+              try { ch.port1.close(); ch.port2.close(); } catch (e) { /* 忽略 */ }
+              r();
+            };
+            ch.port2.postMessage(0);
+            return;
+          } catch (e) {
+            if (fallback) clearTimeout(fallback);
+            /* 回退到 setTimeout */
+          }
+        }
+        setTimeout(r, 0);
+      } else if (window.requestAnimationFrame) requestAnimationFrame(function () { r(); });
       else setTimeout(r, 16);
     });
   }
@@ -176,15 +212,28 @@
 
   function showProgress(p, label) {
     $('progressWrap').hidden = false;
+    // 新一轮进度开始：清空节流窗口与上一轮的标签，保证第一条中间进度一定可见
+    lastProgressPaint = 0;
+    lastProgressLabel = '';
     setProgress(p, label);
   }
 
+  var lastProgressPaint = 0;
+  var lastProgressLabel = '';
   function setProgress(p, label) {
+    // 低端安卓上每块一次 DOM 写入有明显布局成本；按时间节流，
+    // 起始(0)、完成(1)、阶段(label)变化与首次显示强制刷新，避免进度条卡在旧值。
+    var now = Date.now();
+    var stageChanged = (label || '') !== lastProgressLabel;
+    if (p > 0 && p < 1 && !stageChanged && now - lastProgressPaint < 80) return;
+    lastProgressPaint = now;
+    lastProgressLabel = label || '';
     $('progressFill').style.width = Math.round(p * 100) + '%';
     $('progressLabel').textContent = (label ? label + ' · ' : '') + Math.round(p * 100) + '%';
   }
 
   function hideProgress() {
+    lastProgressPaint = 0;
     $('progressWrap').hidden = true;
     $('progressFill').style.width = '0%';
   }
@@ -193,6 +242,11 @@
     state.busy = busy;
     $('btnImport').classList.toggle('disabled', busy);
     $('btnRecord').disabled = busy;
+    // 合并中禁止改动输出格式/位率：streamMerge 的头部与编码器按进入时格式
+    // 初始化一次，中途切换会崩在 enc=null 或产出头部与数据不符的损坏文件。
+    $('bitrateSel').disabled = busy;
+    var fmtBtns = document.querySelectorAll('#formatGroup .seg-btn');
+    for (var i = 0; i < fmtBtns.length; i++) fmtBtns[i].disabled = busy;
     updateMergeButton();
   }
 
@@ -279,11 +333,9 @@
    */
   function segEffectiveDuration(seg) {
     if (!seg || !seg.duration) return 0;
-    var dur = seg.duration;
-    var start = typeof seg.trimStart === 'number' ? seg.trimStart : 0;
-    var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : dur;
-    if (end <= start) return 0;
-    return Math.min(end, dur) - Math.max(0, start);
+    // 统一到核心层纯函数：无效剪切范围回退整段（与 segTrimFrames 一致）。
+    // 旧实现返回 0 / 负值，界面承诺与实际 planMerge 输出相反。
+    return AudioCore.effectiveDurationSec(seg.duration, seg.trimStart, seg.trimEnd);
   }
 
   function totalDuration() {
@@ -326,6 +378,7 @@
       channels: seg.channels,
       decoding: false,
       failed: false,
+      warn: seg.warn || null,    // 短音频/内置解码的试听警示必须随副本保留
       released: !seg.pcm,       // 原片段还没解码完 → 副本入队自己解
       trimStart: seg.trimStart != null ? seg.trimStart : null,
       trimEnd: seg.trimEnd != null ? seg.trimEnd : null,
@@ -396,6 +449,18 @@
     decodeRunning = true;
     decodeSegment(seg).then(function () {
       decodeRunning = false;
+      pumpQueue();
+    }).catch(function (err) {
+      // decodeSegment 内部已尽力处理常见失败；这里兜住意外 rejection，
+      // 否则 decodeRunning 永远为 true，后续导入的片段再也不会解码。
+      decodeRunning = false;
+      if (!seg.removed) {
+        seg.decoding = false;
+        seg.failed = true;
+        seg.errorMsg = '解码异常：' + (err && err.message ? err.message : err);
+        setStatus(seg.errorMsg, true);
+      }
+      renderList(true);
       pumpQueue();
     });
   }
@@ -502,28 +567,36 @@
        * 全是这类文件时还会抛出内部的 "planMerge: 所有片段均为空"。因此必须当失败，
        * 并继续走降级链让内置解析器再试一次。 */
       var platformSuspicious = false;
+      var shortWarning = null;
       if (audioBuf && audioBuf.length === 0) {
         primaryErr = new Error('平台解码器返回了 0 帧音频（文件很可能损坏或不完整）');
         audioBuf = null;
         platformSuspicious = true;
-      } else if (audioBuf && audioBuf.duration < MIN_VALID_SEC) {
-        primaryErr = new Error('平台解码器只解出 ' + (audioBuf.duration * 1000).toFixed(0) +
-          ' 毫秒音频（文件很可能损坏或不完整）');
-        audioBuf = null;
-        platformSuspicious = true;
+      } else if (audioBuf) {
+        // 「警告但保留」：极短但非零的结果保留并挂警示；只有无效时长才转降级链
+        var primaryAssessment = AudioCore.assessShortAudio(audioBuf.duration, MIN_VALID_SEC);
+        if (!primaryAssessment.valid) {
+          primaryErr = new Error('平台解码器返回了无效时长（文件很可能损坏或不完整）');
+          audioBuf = null;
+          platformSuspicious = true;
+        } else {
+          shortWarning = primaryAssessment.warning;
+        }
       }
 
       if (audioBuf) {
         seg.pcm = audioBufferToPcm(audioBuf);
         seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
-        seg.warn = null; // 平台这次解好了，清掉此前可能存在的"结果存疑"警示
+        seg.released = false;      // 复制片段自己解完后必须清标记，否则下次合并又全量重解一遍
+        seg.warn = shortWarning; // 极短音频保留但给出试听警示；正常结果为 null
         seg.duration = audioBuf.duration;
         seg.sampleRate = audioBuf.sampleRate;
         seg.channels = audioBuf.numberOfChannels;
         seg.decoding = false;
+        if (seg.removed) return; // 解码期间被删除：不再渲染/汇报幽灵片段
         renderList();
         var rest = decodeQueue.length;
-        setStatus('已解码「' + seg.name + '」（' + fmtTime(seg.duration) + '）' +
+        reportDecodeStatus(seg, '已解码「' + seg.name + '」（' + fmtTime(seg.duration) + '）' +
           (rest > 0 ? '，队列还剩 ' + rest + ' 个' : '') +
           '。当前共 ' + state.segments.length + ' 段，合计 ' + fmtTime(totalDuration()));
         return;
@@ -545,17 +618,21 @@
         fbErr = e2;
       }
       if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
-      // 兜底解析器同样可能产出 0 帧或垃圾短解（例如 mpg123 空解），一样按失败处理，
-      // 绝不允许"静默消失"或"只有几十毫秒"的片段混进列表。
+      // 兜底解析器产出 0 帧仍按失败处理（绝不允许片段静默消失）；
+      // 极短但有效的结果按「警告但保留」进入列表并显示黄色警示行。
       var fbSec = fb ? AudioCore.pcmDurationSec(fb.pcm) : 0;
-      if (fb && fbSec < MIN_VALID_SEC) {
+      var fbAssessment = AudioCore.assessShortAudio(fbSec, MIN_VALID_SEC);
+      var fbShortWarn = null;
+      if (fb && !fbAssessment.valid) {
         fb = null;
-        fbErr = new Error('内置解析器只解出 ' + (fbSec * 1000).toFixed(0) +
-          ' 毫秒音频，文件很可能损坏');
+        fbErr = new Error('内置解析器未解出有效音频，文件很可能损坏');
+      } else if (fb) {
+        fbShortWarn = fbAssessment.warning;
       }
       if (fb) {
         seg.pcm = fb.pcm;
         seg.audioBuffer = null; // 无 AudioBuffer，M4A 路径会按 PCM 重建
+        seg.released = false;   // 同平台解码路径：解完即清，避免重复解码
         seg.duration = AudioCore.pcmDurationSec(fb.pcm);
         seg.sampleRate = fb.pcm.sampleRate;
         seg.channels = fb.pcm.channels.length;
@@ -564,17 +641,18 @@
         // 平台只解出一小段（典型：损坏 MP3 被解成几十毫秒噪声）时，内置解析器的结果
         // 未必可信——它可能是把垃圾数据硬解出来的。此时仍采用其输出（否则那段会静默消失），
         // 但必须显式标注，让用户试听确认后再决定是否留下。
-        seg.warn = platformSuspicious
-          ? '平台解码结果异常短，内容由内置解码器还原，请试听确认后再合并'
-          : null;
+        seg.warn = fbShortWarn || (platformSuspicious
+          ? '平台解码结果为 0 帧，内容由内置解码器还原，请试听确认后再合并'
+          : null);
         var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG' : 'WAV');
+        if (seg.removed) return;
         renderList();
         if (platformSuspicious) {
-          setStatus('「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
+          reportDecodeStatus(seg, '「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
             '）解出 ' + fmtTime(seg.duration) +
             '，请试听确认内容是否完整，若不满意可删除该片段');
         } else {
-          setStatus('「' + seg.name + '」平台解码器不支持，已用内置解码器（' + label +
+          reportDecodeStatus(seg, '「' + seg.name + '」平台解码器不支持，已用内置解码器（' + label +
             '）解码完成：' + fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
         }
         return;
@@ -582,13 +660,19 @@
       // 无内置解析器：抛出带格式信息与建议的错误
       throw decorateDecodeError(seg, info, primaryErr, fbErr);
     } catch (err) {
-      if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+      if (seg.removed || !state.segments.some(function (s) { return s.id === seg.id; })) return;
       seg.decoding = false;
       seg.failed = true;
       seg.errorMsg = err && err.message ? err.message : String(err);
       renderList();
-      setStatus(seg.errorMsg, true);
+      reportDecodeStatus(seg, seg.errorMsg, true);
     }
+  }
+
+  /** 解码状态汇报：合并/取消进行中不覆盖进度与取消提示；已删除片段不产生幽灵提示 */
+  function reportDecodeStatus(seg, msg, isError) {
+    if (!seg || seg.removed || state.busy) return;
+    setStatus(msg, isError);
   }
 
   /** 组装可操作的解码失败信息（含文件大小、检测格式、建议） */
@@ -615,6 +699,10 @@
     var seg = state.segments.find(function (s) { return s.id === id; });
     if (seg && state.playingId === id) stopSegPlayback();
     if (seg && seg.url) { URL.revokeObjectURL(seg.url); seg.url = null; }
+    // 仍在排队、或正在解码的片段一并标记：否则解码完成后仍会写状态栏/重渲染，
+    // 让用户看到"已解码「已删除的片段」"这种幽灵提示。
+    if (seg) seg.removed = true;
+    decodeQueue = decodeQueue.filter(function (q) { return q.id !== id; });
     state.segments = state.segments.filter(function (s) { return s.id !== id; });
     renderList();
   }
@@ -675,6 +763,7 @@
   }
 
   function setFormat(fmt) {
+    if (state.busy) return; // 合并期间格式已由 plan/编码器固定，禁止切换
     if (fmt === 'm4a' && !state.m4aSupported) return;
     state.format = fmt;
     var btns = document.querySelectorAll('#formatGroup .seg-btn');
@@ -687,15 +776,34 @@
     updateMergeButton();
   }
 
+  /**
+   * 整次合并的目标声道数（单一决策点）。
+   * WAV/MP3：全部片段单声道 → 1，否则 → 2；M4A 走独立调度路径，恒为立体声。
+   * 头部、编码器、交织缓冲全部从同一个 plan.targetChannels 派生，禁止逐段变化。
+   */
+  function mergeTargetChannels() {
+    return state.format === 'm4a' ? 2 : AudioCore.pickTargetChannels(state.segments);
+  }
+
   function updateFormatHint() {
     var hint;
     if (state.format === 'wav') {
-      hint = 'WAV 无损：约 ' + fmtSize(estimateTargetRate() * 4) + '/秒，兼容性最好，适合存档。';
+      // 与 updateSizeEstimate 一致：按实际目标声道数计算每秒字节，不能写死立体声
+      hint = 'WAV 无损：约 ' + fmtSize(estimateTargetRate() * mergeTargetChannels() * 2) +
+        '/秒（' + (mergeTargetChannels() === 1 ? '单声道' : '立体声') + '），兼容性最好，适合存档。';
       if (isIOSDevice()) {
         hint += 'iOS 上超大 WAV 可能因内存限制被浏览器重载，长音频建议选 MP3 或分段合并。';
       }
     } else if (state.format === 'mp3') {
       hint = 'MP3 有损压缩：体积约为 WAV 的 1/10，编码在本地完成，长文件需要几十秒。';
+      /* 实测：本项目的 lamejs 在 64/96 kbps 反而比 128 kbps 慢约 2.9 倍，
+         选低位率既不会更快也不会明显更省时间，必须明示避免用户误选。 */
+      if (state.bitrate < 128) {
+        hint += ' 注意：' + state.bitrate + ' kbps 在本编码器上反而比 128 kbps 慢约 2–3 倍，追求速度请选 128 kbps。';
+      }
+      if (mergeTargetChannels() === 1) {
+        hint += ' 已检测到全部片段为单声道，将按单声道编码（更快、体积更小）。';
+      }
     } else {
       hint = 'M4A(AAC) 实时编码：按播放速度录制合并结果，耗时与音频等长，期间请保持页面在前台。';
     }
@@ -709,18 +817,23 @@
       return;
     }
     var rate = estimateTargetRate();
+    var channels = mergeTargetChannels();
     var bytes;
-    if (state.format === 'wav') bytes = dur * rate * 2 * 2;          // 立体声 16bit
+    if (state.format === 'wav') bytes = dur * rate * channels * 2;  // 16bit × 实际声道数
     else if (state.format === 'mp3') bytes = dur * state.bitrate * 1000 / 8;
     else bytes = dur * 128000 / 8;                                    // M4A 按 128kbps 估
     $('sizeEst').textContent = '预计约 ' + fmtSize(bytes) +
-      '（' + Math.round(rate / 1000) + 'kHz · 当前 ' + state.segments.length +
-      ' 段合计 ' + fmtTime(dur) + '）';
+      '（' + Math.round(rate / 1000) + 'kHz · ' + (channels === 1 ? '单声道' : '立体声') +
+      ' · 当前 ' + state.segments.length + ' 段合计 ' + fmtTime(dur) + '）';
   }
 
   /* ---------------- 列表渲染 ---------------- */
   /** 清理已生成的合并结果（列表变动后结果即过期） */
   function hideResult() {
+    // 结果被丢弃时若上传仍在进行，立即中断，避免回调把旧链接写回新界面
+    if (uploadState.busy && uploadState.xhr) {
+      try { uploadState.xhr.abort(); } catch (e) { /* 忽略 */ }
+    }
     var a = $('resultAudio');
     try { a.pause(); } catch (e) { /* 忽略 */ }
     a.removeAttribute('src');
@@ -751,10 +864,16 @@
    * @param {boolean} [keepResult] 为 true 时不清理已生成的合并结果（试听场景用）
    */
   function renderList(keepResult) {
+    // 拖拽把手按下后，DOM 里的 li 正在被 insertBefore 移动。此时若因解码完成等
+    // 异步回调重建列表，segDrag.li 会指向游离节点，出现重复行或拖拽失效。
+    // 推迟到 endDrag 之后补渲染；副作用（估算/按钮状态）仍然立即执行。
+    if (segDrag) { pendingRender = true; return; }
     if (!keepResult) hideResult();
     updateActionBar();
     updateSizeEstimate();
+    updateFormatHint(); // 片段变化会改变目标声道数/低位率提示，需同步刷新
     updateMergeButton();
+    pendingRender = false;
 
     var ul = $('segmentList');
     ul.textContent = '';
@@ -838,7 +957,9 @@
     var s = Math.max(0, sec || 0);
     var m = Math.floor(s / 60);
     var r = s - m * 60;
-    return m + ':' + (r < 10 ? '0' : '') + r.toFixed(1);
+    // 「警告但保留」会放行 50ms 级片段，1 位小数会全部显示成 0.0
+    var digits = (s > 0 && s < 1) ? 3 : 1;
+    return m + ':' + (r < 10 ? '0' : '') + r.toFixed(digits);
   }
 
   /** 构建片段剪切面板（起止时间滑杆 + 数字输入） */
@@ -848,6 +969,10 @@
     var end = typeof seg.trimEnd === 'number' ? seg.trimEnd : dur;
     var panel = el('div', 'trim-panel');
     panel.dataset.role = 'trim';
+    // 「警告但保留」放行 50ms 级片段：0.1s 步长会大于片段总长，滑杆与数字框都不可用
+    var shortClip = dur > 0 && dur < 1;
+    var step = shortClip ? String(Math.max(0.0001, dur / 100)) : '0.1';
+    var digits = shortClip ? 3 : 1;
 
     function row(label, which, value, max) {
       var r = el('div', 'trim-row');
@@ -857,7 +982,7 @@
       range.className = 'trim-range';
       range.min = '0';
       range.max = String(max);
-      range.step = '0.1';
+      range.step = step;
       range.value = String(value);
       range.dataset.trim = which;
       r.appendChild(range);
@@ -866,8 +991,8 @@
       num.className = 'trim-num';
       num.min = '0';
       num.max = String(max);
-      num.step = '0.1';
-      num.value = value.toFixed(1);
+      num.step = step;
+      num.value = value.toFixed(digits);
       num.dataset.trim = which;
       r.appendChild(num);
       return r;
@@ -950,6 +1075,7 @@
   }
 
   async function toggleRecord() {
+    if (state.recordPending) return; // 权限弹窗等待期连点不再产生并发 MediaRecorder / 流
     if (state.mediaRecorder && state.mediaRecorder.state === 'recording') {
       state.mediaRecorder.stop();
       return;
@@ -964,9 +1090,13 @@
     }
     // 权限弹窗前预热（弹窗在手机上要好几秒）
     warmAudioPipeline();
+    state.recordPending = true;
+    var stream = null;
     try {
       setStatus('正在请求麦克风权限…');
-      var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // 权限等待期间用户可能已清空/离开：仍继续正常启动，但先把 pending 复位
+      state.recordPending = false;
       var mimeType = pickMimeType();
       state.recordChunks = [];
       state.mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : undefined);
@@ -985,17 +1115,24 @@
       }, 250);
       setStatus('录音中…（格式：' + (mimeType || '浏览器默认') + '）');
     } catch (err) {
+      // 权限已授予但后续步骤失败时必须关掉麦克风，否则轨道一直占用（指示灯常亮）
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { /* 忽略 */ } });
+      }
       console.error(err);
       var msg = err && err.name === 'NotAllowedError'
         ? '麦克风权限被拒绝，请在浏览器设置中允许后重试' +
           (isWeChat() ? '；或点右上角 ⋯ 用默认浏览器打开' : '')
         : '无法启动录音：' + (err && err.message ? err.message : err);
       setStatus(msg, true);
+    } finally {
+      state.recordPending = false;
     }
   }
 
   async function onRecordStop() {
     clearInterval(state.recordTimer);
+    state.recordPending = false;
     $('btnRecord').textContent = '开始录音';
     $('btnRecord').classList.remove('recording');
     $('recordDot').hidden = true;
@@ -1052,6 +1189,11 @@
     try {
       var dir = await navigator.storage.getDirectory();
       var handle = await dir.getFileHandle(name, { create: true });
+      // 取消/失败时除了关闭写句柄，还必须删掉这个半成品文件：OPFS 没有 GC，
+      // 旧实现只 close/abort，长音频取消一次就会在磁盘上永久留下几十至几百 MB。
+      var removeFile = async function () {
+        try { await dir.removeEntry(name); } catch (e) { /* 可能已被清理 */ }
+      };
       if (typeof handle.createSyncAccessHandle === 'function') {
         var access = await handle.createSyncAccessHandle();
         access.truncate(0);
@@ -1064,7 +1206,10 @@
             access.close();
             return await handle.getFile(); // OPFS File：磁盘支撑的 Blob，不占内存
           },
-          abort: function () { try { access.close(); } catch (e) { /* 忽略 */ } }
+          abort: async function () {
+            try { access.close(); } catch (e) { /* 忽略 */ }
+            await removeFile();
+          }
         };
       }
       if (typeof handle.createWritable === 'function') {
@@ -1077,9 +1222,13 @@
             await writable.close();
             return await handle.getFile();
           },
-          abort: async function () { try { await writable.abort(); } catch (e) { /* 忽略 */ } }
+          abort: async function () {
+            try { await writable.abort(); } catch (e) { /* 忽略 */ }
+            await removeFile();
+          }
         };
       }
+      await removeFile(); // 句柄能力都不可用：清掉刚创建的空文件
       return null;
     } catch (e) {
       return null;
@@ -1116,17 +1265,19 @@
   }
 
   /** 合并前确保所有片段都有解码数据（被释放过的重新解码） */
-  async function ensureAllDecoded() {
+  async function ensureAllDecoded(token) {
     var pending = state.segments.filter(function (s) { return s.released && !s.failed; });
     for (var i = 0; i < pending.length; i++) {
+      // 取消发生在重解码队列中时立即停止，不再把剩余片段全量解一遍（大文件尤其明显）
+      if (token !== state.mergeToken) throw canceledError();
       var seg = pending[i];
       seg.released = false;
       seg.decoding = true;
-      renderList();
-      setStatus('重新解码「' + seg.name + '」…');
+      renderList(true);
+      setStatus('正在准备合并：重新解码「' + seg.name + '」…');
       await decodeSegment(seg);
     }
-    renderList();
+    renderList(true);
   }
 
   /** 合并内存估算（字节）：输入解码数据 + 输出文件（时长按剪切后有效时长） */
@@ -1142,7 +1293,7 @@
       }
     });
     var out = 0;
-    if (state.format === 'wav') out = dur * estimateTargetRate() * 2 * 2;
+    if (state.format === 'wav') out = dur * estimateTargetRate() * mergeTargetChannels() * 2;
     else if (state.format === 'mp3') out = dur * state.bitrate * 1000 / 8;
     else out = dur * 128000 / 8; // M4A 按 128kbps 估
     return { inputs: inputs, out: out, total: inputs + out };
@@ -1163,7 +1314,7 @@
         var t = segTrimFrames(s);
         return { name: s.name, pcm: s.pcm, trimStart: t.start, trimEnd: t.end };
       }),
-      { targetSampleRate: targetRate, targetChannels: 2, gapSec: gapSec, fadeMs: 8 }
+      { targetSampleRate: targetRate, targetChannels: mergeTargetChannels(), gapSec: gapSec, fadeMs: 8 }
     );
 
     // 归一化全局增益（与"先拼接再归一化"等价：拼接后峰值 = 各段淡变后峰值的最大者）
@@ -1293,7 +1444,6 @@
       var blob;
       if (sink) {
         blob = await sink.finish();
-        state.mergedOpfsName = sink.name;
       } else {
         blob = new Blob(parts, { type: state.format === 'mp3' ? 'audio/mpeg' : 'audio/wav' });
       }
@@ -1358,7 +1508,7 @@
         return buf;
       }
 
-      segs.forEach(function (seg) {
+      segs.forEach(function (seg, segIndex) {
         if (!seg.pcm) return;
         var buf = segmentBuffer(seg);
         var dur = buf.duration;
@@ -1378,18 +1528,32 @@
         src.start(t);
         src.stop(t + dur);
         sources.push(src);
-        t += dur + gapSec;
+        // 只在段间插间隔：WAV/MP3 的 planMerge 也是 gapFrames*(parts-1)，
+        // 旧实现对最后一段也加 gapSec，导致成品多录一段静音、显示时长少报。
+        t += dur + (segIndex < segs.length - 1 ? gapSec : 0);
       });
       var endTime = t;
 
+      var stopped = false;
+      function stopNow() {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(timer);
+        try { if (rec.state !== 'inactive') rec.stop(); } catch (e) { /* 忽略 */ }
+      }
+      rec.onerror = function (e) {
+        stopNow();
+        state.m4aRecorder = null;
+        var err = (e && e.error && e.error.message) || '录制编码失败';
+        reject(new Error('M4A ' + err + '，请改用 WAV 或 MP3'));
+      };
       rec.start(1000);
       var timer = setInterval(function () {
+        // 实时编码与音频等长，取消必须立刻生效，不能等 endTime 到了才检查
+        if (token !== state.mergeToken) { stopNow(); return; }
         var p = Math.min(1, Math.max(0, (ctx.currentTime - t0) / Math.max(0.001, endTime - t0)));
         onProgress(p);
-        if (p >= 1) {
-          clearInterval(timer);
-          if (rec.state !== 'inactive') rec.stop();
-        }
+        if (p >= 1) stopNow();
       }, 250);
 
       rec.onstop = function () {
@@ -1398,6 +1562,11 @@
         sources.forEach(function (s) { try { s.stop(); } catch (e) { /* 忽略 */ } });
         if (token !== state.mergeToken) {
           reject(canceledError());
+          return;
+        }
+        // 空 chunks 也必须判失败：旧实现会 resolve 一个 0 字节 Blob 并报「合并完成」
+        if (!chunks.length) {
+          reject(new Error('M4A 编码未产出数据（可能是媒体权限或编码器异常），请改用 WAV 或 MP3'));
           return;
         }
         var type = (chunks[0] && chunks[0].type) || mime || 'audio/mp4';
@@ -1438,7 +1607,7 @@
     try {
       // 被释放过的片段重新解码（流式合并会逐段释放输入控制内存峰值）
       if (segs.some(function (s) { return s.released; })) {
-        await ensureAllDecoded();
+        await ensureAllDecoded(token);
         if (token !== state.mergeToken) throw canceledError();
         if (decodingCount() > 0 || segs.some(function (s) { return s.failed; })) {
           throw new Error('请先等待所有片段解码完成（或移除失败的片段）');
@@ -1446,18 +1615,30 @@
       }
 
       if (state.format === 'm4a') {
+        // M4A 不产生 OPFS 文件：顺手清掉上次 WAV/MP3 合并留下的孤儿（hideResult 已丢弃该结果）
+        await cleanOldOpfsFiles(null);
         // M4A：AudioBuffer 顺序调度 + MediaRecorder 实时捕获
         setStatus('M4A 实时编码中：耗时与音频等长，请保持页面在前台…');
         await getCtx();
+        if (token !== state.mergeToken) throw canceledError();
         await nextFrame();
+        if (token !== state.mergeToken) throw canceledError();
         var mTarget = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
         var mGap = parseFloat($('gapRange').value) || 0;
         var mGain = 1;
         if ($('normalizeChk').checked) {
           var mPeak = 0;
-          segs.forEach(function (s) {
-            mPeak = Math.max(mPeak, AudioCore.segmentPeakAfterFade(s.pcm, mTarget, 2, 8));
-          });
+          for (var mi = 0; mi < segs.length; mi++) {
+            // 峰值扫描是同步长任务；每 4 段让出一次，让「取消」在准备阶段就能生效
+            if (token !== state.mergeToken) throw canceledError();
+            if (mi > 0 && mi % 4 === 0) await nextFrame();
+            var ms = segs[mi];
+            // 与 WAV/MP3 路径一致：只统计剪切后区间，否则被剪掉的响段会压低增益
+            var t = segTrimFrames(ms);
+            mPeak = Math.max(mPeak, AudioCore.segmentPeakAfterFade(
+              ms.pcm, mTarget, 2, 8, t.start, t.end
+            ));
+          }
           if (mPeak > 0 && isFinite(mPeak)) mGain = Math.min(0.89 / mPeak, 8);
         }
         var r = await encodeM4AScheduled(segs, mTarget, mGap, mGain, 0.008, token, function (p) {
@@ -1596,54 +1777,109 @@
    *
    * 接口一律用相对路径（'api/...'），以适配子目录部署（如 GitHub Pages 的 /audio-merge-lab/）。
    */
+  /**
+   * 服务可用状态统一管理：探测失败、服务关闭、上传失败都要复位，
+   * 否则「分享/下载」会被永久锁死在上传通道上，用户刷新才可能恢复（F2）。
+   */
+  function setServerReady(ok) {
+    state.serverReady = !!ok;
+    if ($('resultBox').hidden || !state.mergedBlob) {
+      $('saveBox').hidden = true;
+    } else {
+      $('saveBox').hidden = !state.serverReady;
+    }
+  }
+
+  /** 探测局域网下载服务，返回 Promise<boolean>；带 3 秒超时，老内核自动退化 */
   function probeDownloadServer() {
-    if (typeof fetch !== 'function') return;
-    fetch('api/health', { cache: 'no-store' })
+    if (typeof fetch !== 'function') { setServerReady(false); return Promise.resolve(false); }
+    var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = null;
+    var opts = { cache: 'no-store' };
+    if (ctrl) {
+      opts.signal = ctrl.signal;
+      timer = setTimeout(function () { try { ctrl.abort(); } catch (e) { /* 忽略 */ } }, 3000);
+    }
+    return fetch('api/health', opts)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (info) {
         // 线上静态托管没有该接口（404 或返回 HTML），解析失败即视为不可用
-        if (info && info.ok && info.upload) {
-          state.serverReady = true;
-          $('saveBox').hidden = false;
-        }
+        setServerReady(!!(info && info.ok && info.upload));
+        return state.serverReady;
       })
-      .catch(function () { /* 未运行下载服务：不显示入口，其余功能不受影响 */ });
+      .catch(function () { setServerReady(false); return false; })
+      .then(function (ok) {
+        if (timer) clearTimeout(timer);
+        return ok;
+      });
   }
 
+  /**
+   * 上传到局域网下载服务。返回 Promise<boolean>：false 表示应走本机降级通道。
+   * 双入口（「分享/下载」与「生成保存链接」）共用一把锁，XHR 有超时与取消能力。
+   */
   function uploadForDownload() {
-    var blob = state.mergedBlob;
-    if (!blob) { setStatus('还没有可保存的结果', true); return; }
+    if (uploadState.busy) return Promise.resolve(false);
+    var blob = state.mergedBlob; // 快照：await 期间结果被替换也不会展示旧链接
+    if (!blob) { setStatus('还没有可保存的结果', true); return Promise.resolve(false); }
     var ext = state.mergedExt || 'wav';
     var mime = blob.type || 'audio/wav';
     var filename = 'merged-' + nowStamp() + '.' + ext;
     var btn = $('btnSaveFile');
     btn.disabled = true;
+    uploadState.busy = true;
     showProgress(0, '上传');
     setStatus('正在上传到本机下载服务…');
 
-    // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) setProgress(e.loaded / e.total, '上传');
-    };
-    xhr.onload = function () {
-      btn.disabled = false;
-      hideProgress();
-      var data = null;
-      try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
-      if (xhr.status >= 200 && xhr.status < 300 && data && data.url) {
-        showSaveLink(data.url, data.name || filename, data.size || blob.size);
-      } else {
-        setStatus('生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)), true);
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish(ok, msg) {
+        if (settled) return;
+        settled = true;
+        if (uploadState.xhr) { try { uploadState.xhr.ontimeout = uploadState.xhr.onabort = null; } catch (e) { /* 忽略 */ } }
+        uploadState.xhr = null;
+        uploadState.busy = false;
+        btn.disabled = false;
+        hideProgress();
+        if (msg && state.mergedBlob === blob) setStatus(msg, !ok);
+        resolve(ok);
       }
-    };
-    xhr.onerror = function () {
-      btn.disabled = false;
-      hideProgress();
-      setStatus('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi', true);
-    };
-    xhr.send(blob);
+      // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
+      var xhr = new XMLHttpRequest();
+      uploadState.xhr = xhr;
+      xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
+      // 大文件按体积放宽，但绝不允许无限等待（旧实现无 timeout，服务假死后永远卡住）
+      xhr.timeout = Math.max(60000, Math.ceil(blob.size / (256 * 1024)) * 1000);
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) setProgress(e.loaded / e.total, '上传');
+      };
+      xhr.onload = function () {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+        if (xhr.status >= 200 && xhr.status < 300 && data && data.url) {
+          if (state.mergedBlob === blob) showSaveLink(data.url, data.name || filename, data.size || blob.size);
+          finish(true);
+        } else {
+          setServerReady(false);
+          finish(false, '生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)) +
+            '。已切回本机保存，请再点一次「分享 / 下载」');
+        }
+      };
+      function networkFail(msg) {
+        setServerReady(false);
+        finish(false, msg);
+      }
+      xhr.onerror = function () {
+        networkFail('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi。' +
+          '已切回本机保存，请再点一次「分享 / 下载」');
+      };
+      xhr.ontimeout = function () {
+        networkFail('上传超时（下载服务无响应），已切回本机保存');
+        try { xhr.abort(); } catch (e) { /* 忽略 */ }
+      };
+      xhr.onabort = function () { networkFail('上传已中断，已切回本机保存'); };
+      try { xhr.send(blob); } catch (e) { networkFail('无法发起上传：' + (e && e.message ? e.message : e)); }
+    });
   }
 
   function showSaveLink(url, name, size) {
@@ -1677,18 +1913,29 @@
   }
 
   async function shareOrDownload() {
+    // 全程用快照：分享面板/上传可能挂起数秒，期间若结果被新合并覆盖或 hideResult()
+    // 撤销了 object URL，旧实现会拿已失效的 URL 继续下载并报「成功」（F4）。
+    var src = state.mergedBlob;
+    if (!src) return;
     var url = ensureResultUrl();
     if (!url) return;
     var ext = state.mergedExt || 'wav';
-    var mime = (state.mergedBlob && state.mergedBlob.type) || 'audio/wav';
+    var mime = src.type || 'audio/wav';
     var filename = 'merged-' + nowStamp() + '.' + ext;
-    var size = state.mergedBlob ? state.mergedBlob.size : 0;
+    var size = src.size || 0;
     var isIOS = isIOSDevice();
 
-    // 1) 本地下载服务可用时优先：直链下载在 iOS 上最稳，且不必把整包读进内存
+    // 1) 本地下载服务可用时优先：直链下载在 iOS 上最稳，且不必把整包读进内存。
+    //    每次导出前重新探测（服务可能已关闭），失败则复位并继续走本机降级链。
     if (state.serverReady) {
-      uploadForDownload();
-      return;
+      var alive = await probeDownloadServer();
+      if (state.mergedBlob !== src) return;
+      if (alive) {
+        var uploaded = await uploadForDownload();
+        if (state.mergedBlob !== src) return;
+        if (uploaded) return;
+        setStatus('下载服务不可用，已切换为本机保存方式…');
+      }
     }
 
     /* 2) 系统分享优先 —— 这是 iOS 上不依赖电脑的唯一保存通道
@@ -1701,27 +1948,29 @@
      *    另外不要用 navigator.canShare 作为门槛：部分 Safari 版本对 audio/* 文件
      *    返回 false，但实际 share 可正常工作，用 try/catch 实测更准。
      */
-    if (navigator.share && state.mergedBlob) {
+    if (navigator.share) {
       try {
-        /* 直接用已有的 mergedBlob 构造 File，不再 fetch(blobURL)：
+        /* 直接用已有的 blob 构造 File，不再 fetch(blobURL)：
          * 那条路会把整个结果在内存里再物化一份。OPFS 落盘的 File 没有 MIME type，
          * 必须包一层补上，否则部分系统的 share 会拒绝。 */
-        var src = state.mergedBlob;
         var file = (src instanceof File && src.type)
           ? src
           : new File([src], filename, { type: mime });
         // 大文件时原生面板要先把数据交出去，可能等几秒；没有提示容易被当成卡死
         setStatus('正在打开系统分享面板…' + (size > 60 * 1024 * 1024 ? '（文件较大，需等待几秒）' : ''));
         await navigator.share({ files: [file], title: '合并录音', text: filename });
+        if (state.mergedBlob !== src) return; // 分享期间结果已被替换：不覆盖新结果的状态
         setStatus('已打开系统分享面板：选「存储到文件」即可保存到「文件」App');
         return;
       } catch (e) {
+        if (state.mergedBlob !== src) return;
         if (e && e.name === 'AbortError') { setStatus('已取消分享'); return; }
         // 不支持 / 文件过大 / 权限被拒 → 继续降级，但不把错误直接抛给用户
       }
     }
 
     // 3) <a download>：iOS 13+ 对同源 blob URL 有效，失败时通常静默无反应
+    if (state.mergedBlob !== src) return; // URL 可能已被 hideResult() revoke
     var anchorOk = downloadViaAnchor(url, filename);
     if (anchorOk && !isIOS) {
       setStatus('已触发下载：' + filename);
@@ -1784,11 +2033,21 @@
       var li = segDrag.li;
       li.classList.remove('dragging');
       segDrag = null;
-      // 按 DOM 顺序同步数据层
-      var order = {};
+      // 先取当前 DOM 顺序；与数据层一致说明没有实际拖动（仅误触把手），
+      // 此时绝不能 renderList()——它会 hideResult() 清掉刚合并的结果。
+      var ids = [];
       Array.prototype.forEach.call($('segmentList').children, function (node) {
-        if (node.dataset && node.dataset.id) order[node.dataset.id] = Object.keys(order).length;
+        if (node.dataset && node.dataset.id) ids.push(node.dataset.id);
       });
+      var unchanged = ids.length === state.segments.length &&
+        state.segments.every(function (s, i) { return s.id === ids[i]; });
+      if (unchanged) {
+        // 期间若有被推迟的列表重建（解码完成等），这里补上；不误触 hideResult()
+        if (pendingRender) renderList(true);
+        return;
+      }
+      var order = {};
+      ids.forEach(function (id, i) { order[id] = i; });
       state.segments.sort(function (a, b) { return order[a.id] - order[b.id]; });
       renderList();
       setStatus('顺序已调整');
@@ -1879,6 +2138,7 @@
 
     // 剪切范围输入（滑杆 / 数字框）：实时写回片段状态并就地刷新显示
     $('segmentList').addEventListener('input', function (e) {
+      if (state.busy) return; // 合并中 plan 已快照，改动只会让估算与结果不一致
       var input = e.target;
       if (!input.classList) return;
       var isRange = input.classList.contains('trim-range');
@@ -1886,23 +2146,31 @@
       if (!isRange && !isNum) return;
       var t = trimTargetFrom(input);
       if (!t) return;
-      var v = parseFloat(input.value);
-      if (!isFinite(v) || v < 0) return;
+      var parsed = parseFloat(input.value);
+      if (!isFinite(parsed) || parsed < 0) return;
+      // 数字框的 max 不会阻止 input 事件取到超大值，必须显式 clamp 到片段时长
+      var max = (typeof t.seg.duration === 'number' && t.seg.duration > 0) ? t.seg.duration : parsed;
+      var v = Math.min(parsed, max);
       if (t.which === 'start') t.seg.trimStart = v;
       else t.seg.trimEnd = v;
+      var shortClip = t.seg.duration > 0 && t.seg.duration < 1;
+      if (isNum && v !== parsed) input.value = v.toFixed(shortClip ? 3 : 1);
       refreshSegRow(t.seg);
     });
 
     bindSegDrag();
 
     $('formatGroup').addEventListener('click', function (e) {
+      if (state.busy) return; // 事件层兜底，防止禁用状态被绕过
       var btn = e.target.closest('.seg-btn');
       if (btn && !btn.disabled) setFormat(btn.dataset.fmt);
     });
 
     $('bitrateSel').addEventListener('change', function () {
+      if (state.busy) { this.value = String(state.bitrate); return; }
       state.bitrate = parseInt(this.value, 10) || 128;
       updateSizeEstimate();
+      updateFormatHint(); // 低位率的「反而更慢」提示需随选择实时刷新
     });
 
     $('segPlayer').addEventListener('ended', function () {

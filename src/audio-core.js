@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.4.2';
+  var APP_VERSION = '0.5.0';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -185,13 +185,30 @@
    *   3. concatSegments 本身也改为单遍直写输出（去掉 conform 中间层）。
    * ------------------------------------------------------------------ */
 
-  /** 合并选项归一化（DEFAULTS + 用户覆盖） */
+  /** 合并选项归一化（DEFAULTS + 用户覆盖），并拒绝会产生静默损坏的数值 */
   function mergeOptions(options) {
     var opts = {};
     var k;
     for (k in DEFAULTS) opts[k] = DEFAULTS[k];
     for (k in (options || {})) {
       if (Object.prototype.hasOwnProperty.call(options || {}, k)) opts[k] = options[k];
+    }
+    // NaN / 负值 / 非法声道数会让帧数计算产出 NaN 或越界写入，最终生成损坏文件；
+    // 公共 API 必须显式拒绝，而不是让错误一路流到 WAV 头。
+    function num(name, min, max) {
+      var v = opts[name];
+      if (typeof v !== 'number' || !isFinite(v) || v < min || (max != null && v > max)) {
+        throw new Error('mergeOptions: ' + name + ' 必须是 ' + min + '~' +
+          (max == null ? '∞' : max) + ' 之间的有限数，收到 ' + v);
+      }
+    }
+    num('targetSampleRate', 1, 384000);
+    num('gapSec', 0);
+    num('fadeMs', 0);
+    num('normalizeTarget', 0, 1);
+    num('maxNormalizeGain', 1);
+    if (opts.targetChannels !== 1 && opts.targetChannels !== 2) {
+      throw new Error('mergeOptions: targetChannels 只支持 1 或 2，收到 ' + opts.targetChannels);
     }
     return opts;
   }
@@ -237,6 +254,12 @@
    *   convert(o0, o1, outChs) → 实际转换帧数；outChs[c] 为长度 ≥ (o1-o0) 的TypedArray
    */
   function createSegmentConverter(srcPcm, opts) {
+    if (!srcPcm || !srcPcm.channels || !srcPcm.channels.length) {
+      throw new Error('createSegmentConverter: 源 PCM 为空');
+    }
+    if (opts.targetChannels !== 1 && opts.targetChannels !== 2) {
+      throw new Error('createSegmentConverter: 目标声道数只支持 1 或 2，收到 ' + opts.targetChannels);
+    }
     var src = srcPcm.channels;
     var srcLen = src[0].length;
     var srcRate = srcPcm.sampleRate;
@@ -297,7 +320,11 @@
           emit(v, outChs[0], n);
           emit(v, outChs[1], n);
         } else {
-          for (c = 0; c < targetChannels; c++) emit(scratch[c] * g * gain, outChs[c], n);
+          // 源声道多于目标时取前 N 个；少于目标时用最后一个声道补齐，
+          // 不写出 undefined（NaN 会一路污染成品）。
+          for (c = 0; c < targetChannels; c++) {
+            emit(scratch[Math.min(c, src.length - 1)] * g * gain, outChs[c], n);
+          }
         }
       }
       return frames;
@@ -494,6 +521,14 @@
     var blockAlign = numChannels * bytesPerSample;
     var dataSize = numFrames * blockAlign;
 
+    // RIFF 的 chunk size 是 32 位无符号：dataSize 与 36+dataSize 都必须能容纳。
+    // setUint32 对超限值会静默截断，产出的文件头与实际数据长度不符（播放器按头截断，
+    // 极端情况被当成 44 字节空文件），而流式落盘确实能写出 >4GB 的 WAV。
+    // 因此在写头之前明确拒绝，而不是等结果文件已经损坏才发现。
+    if (!isFinite(dataSize) || dataSize < 0 || dataSize > 0xffffffff - 36) {
+      throw new Error('WAV 输出超过 RIFF 格式上限（约 4 GB）：请改用 MP3 或分段合并');
+    }
+
     var buffer = new ArrayBuffer(44);
     var view = new DataView(buffer);
     function writeStr(off, s) {
@@ -654,6 +689,11 @@
     var isCanceled = opts.isCanceled || function () { return false; };
 
     var numChannels = pcm.channels.length;
+    // lamejs 的 Mp3Encoder 只接受 1/2 声道；>2 时旧实现只编码前两声道却把
+    // numChannels 原样传进去，得到的是声道数声明与实际数据不符的坏文件。
+    if (numChannels !== 1 && numChannels !== 2) {
+      throw new Error('encodeMP3: 只支持单声道或立体声，收到 ' + numChannels + ' 声道');
+    }
     var sampleRate = pcm.sampleRate;
     var int16 = pcmToInt16Channels(pcm);
     var total = int16[0].length;
@@ -872,6 +912,12 @@
     if ([1, 2, 3, 4, 8].indexOf(bytesPerSample) === -1) {
       throw new Error('WAV 位深不支持: ' + fmt.bitsPerSample);
     }
+    // IEEE float WAV 只定义 32/64 位；若遇到 float 头但位深为 8/16/24，
+    // 旧实现的 isFloat 分支对 1/2/3 字节一律写 0，会静默产出整段静音。
+    if (fmt.audioFormat === 3 && bytesPerSample !== 4 && bytesPerSample !== 8) {
+      throw new Error('IEEE float WAV 位深不支持: ' + fmt.bitsPerSample +
+        '（仅支持 32 / 64 位浮点）');
+    }
     var blockAlign = fmt.numChannels * bytesPerSample;
     var frames = Math.floor(dataLen / blockAlign);
     if (frames <= 0) throw new Error('WAV 无可解析的采样数据');
@@ -888,7 +934,9 @@
           v = bytesPerSample === 4 ? dv.getFloat32(off, true)
             : (bytesPerSample === 8 ? dv.getFloat64(off, true) : 0);
         } else if (bytesPerSample === 1) {
-          v = (bytes[off] - 128) / 128; // 8bit WAV 为无符号
+          // 8bit WAV 为无符号 [0,255]；用 127.5 作中点才能让 0→-1、255→+1
+          // 对称满幅（旧的 /128 会让正半轴少 1 LSB，且 0 映射到 -1、255 只到 0.992）
+          v = (bytes[off] - 127.5) / 127.5;
         } else if (bytesPerSample === 2) {
           v = dv.getInt16(off, true) / 32768;
         } else if (bytesPerSample === 3) {
@@ -904,9 +952,90 @@
     return { sampleRate: fmt.sampleRate, channels: channels };
   }
 
+  /**
+   * 计算片段剪切后的有效时长（秒）。
+   *
+   * 必须与 app.js 的 segTrimFrames 对「无效范围」的处理保持一致：起止倒置、相等、
+   * 终点为 0、起点超过时长，一律回退整段。旧实现返回 0（起点>时长时甚至返回负值），
+   * 而 planMerge 按整段输出，造成界面显示 0 秒却合并出整段音频，并绕过体积保护。
+   *
+   * @param {number} duration 片段总时长（秒）
+   * @param {number} [trimStart] 起点（秒）
+   * @param {number} [trimEnd] 终点（秒）
+   * @returns {number} 有效时长（秒，恒 >= 0）
+   */
+  function effectiveDurationSec(duration, trimStart, trimEnd) {
+    var dur = Number(duration);
+    if (!isFinite(dur) || dur <= 0) return 0;
+    var s = (typeof trimStart === 'number' && isFinite(trimStart)) ? trimStart : 0;
+    var e = (typeof trimEnd === 'number' && isFinite(trimEnd)) ? trimEnd : dur;
+    s = Math.max(0, Math.min(s, dur));
+    e = Math.max(0, Math.min(e, dur));
+    if (e <= s) return dur;
+    return e - s;
+  }
+
+  /**
+   * 短音频判定（「警告但保留」策略）。
+   *
+   * 只有 0 帧 / 非数 / 负时长才是真正的无效解码，必须交给降级链或报错；
+   * 0 < duration < threshold 的极短结果既可能是合法提示音/音效，也可能是损坏
+   * 文件解出的噪声，单凭时长无法区分。因此保留结果并返回警示文案，由用户试听决定，
+   * 不再静默丢弃或误报「解码失败」。
+   *
+   * @param {number} durationSec 解码结果时长（秒）
+   * @param {number} thresholdSec 警示阈值（app.js 传 MIN_VALID_SEC）
+   * @returns {{valid: boolean, warning: (string|null)}}
+   */
+  function assessShortAudio(durationSec, thresholdSec) {
+    var d = Number(durationSec);
+    if (!isFinite(d) || d <= 0) return { valid: false, warning: null };
+    var t = Number(thresholdSec);
+    if (!isFinite(t) || t <= 0 || d >= t) return { valid: true, warning: null };
+    return {
+      valid: true,
+      warning: '解码时长仅 ' + (d * 1000).toFixed(0) +
+        ' 毫秒：可能是极短音效，也可能是损坏文件，请试听确认后再合并'
+    };
+  }
+
+  /**
+   * 选择整次合并的目标声道数：全部片段均为单声道时输出单声道（编码量约减半），
+   * 否则统一输出立体声。
+   *
+   * 关键约束：一次合并**只能有一个**目标声道数。WAV 头（numChannels / blockAlign /
+   * byteRate / dataSize）、MP3 编码器状态、Int16 缓冲与交织缓冲都在合并开始时按它
+   * 初始化；若逐段变化，会产出头部与实际数据不符的损坏文件。
+   * 因此混合输入必须上混为立体声，不能让各段保留自己的声道数。
+   * 数据未就绪或异常时保守回退立体声，避免估算与合并结果不一致。
+   *
+   * @param {Array<{pcm?:{channels:Array}}>} segments
+   * @returns {number} 1 或 2
+   */
+  function pickTargetChannels(segments) {
+    if (!segments || !segments.length) return 2;
+    for (var i = 0; i < segments.length; i++) {
+      var seg = segments[i];
+      var n = 0;
+      if (seg && seg.pcm && seg.pcm.channels && seg.pcm.channels.length) {
+        n = seg.pcm.channels.length;
+      } else if (seg && typeof seg.channels === 'number' && seg.channels > 0) {
+        // 流式合并会逐段释放 pcm；解码时保存的 channels 仍在，用它保持判定稳定，
+        // 否则合并后 UI 会从「单声道」翻转成「立体声」，与实际产物不符。
+        n = seg.channels;
+      }
+      if (n !== 1) return 2;
+    }
+    return 1;
+  }
+
   return {
     APP_VERSION: APP_VERSION,
     DEFAULTS: DEFAULTS,
+    mergeOptions: mergeOptions,
+    effectiveDurationSec: effectiveDurationSec,
+    assessShortAudio: assessShortAudio,
+    pickTargetChannels: pickTargetChannels,
     createSilence: createSilence,
     resampleChannel: resampleChannel,
     conformPcm: conformPcm,

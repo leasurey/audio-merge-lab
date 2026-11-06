@@ -91,7 +91,18 @@
     return false; // 不吞掉错误，控制台仍可见
   };
 
-  // 2) 超时未就绪：DOM 可用后检查，主应用应在此之前替换为「就绪」状态
+  // 2) 未处理的 Promise rejection：主应用是 async 初始化，旧实现只监听
+  //    window.onerror，异步失败时会白屏且不弹任何提示（旧内核无此事件则跳过）
+  try {
+    window.addEventListener('unhandledrejection', function (ev) {
+      if (booted) return;
+      var r = ev && ev.reason;
+      var msg = r && r.message ? r.message : (r || '未知错误');
+      show('异步初始化失败：' + String(msg).slice(0, 120));
+    });
+  } catch (e) { /* 旧内核不支持该事件则忽略 */ }
+
+  // 3) 超时未就绪：DOM 可用后检查，主应用应在此之前替换为「就绪」状态
   function check() {
     if (booted || shown) return;
     var s = document.getElementById('status');

@@ -3,10 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
+<!-- iOS 状态栏颜色随系统明暗模式切换（HIG: 提供 light / dark 两套） -->
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="description" content="纯本地音频合并工具：导入或录音频，合并为 WAV / MP3 / M4A。iOS / Android / Web 通用。">
 <title>录音合并器 · Audio Merge Lab</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -22,79 +24,118 @@
 <body>
 <div class="wrap">
 
+  <!-- 应用标识与隐私说明：主标题 → 一句话功能 → 隐私承诺 → 次级入口 -->
   <header class="app-header">
-    <h1><span class="dot"></span>录音合并器</h1>
-    <p>导入 mp3 / m4a / wav / webm 等音频，或直接录音，按顺序合并为一个文件。全部在本地处理，不上传任何数据。</p>
-    <p class="header-links"><a href="guide.html">第一次用？看使用指南 →</a></p>
-  </header>
-
-  <!-- 导入 / 录音 -->
-  <section class="card">
-    <h2>1. 添加片段</h2>
-    <div class="btn-row">
-      <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
-           不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
-      <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
-      <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
-    </div>
-    <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
-    <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
-         会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
-    <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
-    <label class="alt-import" for="fileInputAny" id="btnImportAny">选不到文件？用兼容模式选择（不过滤格式）</label>
-    <div class="rec-indicator">
-      <span class="rec-dot" id="recordDot" hidden></span>
-      <span id="recordTime"></span>
-    </div>
-    <p class="hint">支持多选。文件仅在浏览器内解码，不会发送到任何服务器。</p>
-  </section>
-
-  <!-- 片段列表 -->
-  <section class="card">
-    <h2>2. 调整顺序 <span class="count" id="listCount">0 段</span></h2>
-    <ul class="seg-list" id="segmentList"></ul>
-    <div class="btn-row" style="margin-top:10px">
-      <button class="btn ghost" id="btnClear" type="button">清空列表</button>
-    </div>
-  </section>
-
-  <!-- 输出与选项 -->
-  <section class="card">
-    <h2>3. 输出与选项</h2>
-    <div class="opt-row">
-      <label>输出格式</label>
-      <div class="seg-control" id="formatGroup">
-        <button type="button" class="seg-btn" data-fmt="wav">WAV</button>
-        <button type="button" class="seg-btn active" data-fmt="mp3">MP3</button>
-        <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
+    <div class="app-identity">
+      <span class="app-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <div class="app-identity-text">
+        <h1>录音合并器</h1>
+        <p class="app-subtitle">Audio Merge Lab</p>
       </div>
     </div>
-    <div class="opt-row" id="bitrateRow">
-      <label for="bitrateSel">MP3 位率</label>
-      <select id="bitrateSel">
-        <option value="96">96 kbps</option>
-        <option value="128" selected>128 kbps</option>
-        <option value="192">192 kbps</option>
-        <option value="256">256 kbps</option>
-        <option value="320">320 kbps</option>
-      </select>
+    <p class="app-intro">导入或录下多段音频，按顺序合并为一个 WAV / MP3 / M4A 文件。</p>
+    <div class="privacy-row">
+      <span class="privacy-chip">纯本地处理 · 不上传</span>
+      <a class="header-link" href="guide.html">使用指南 →</a>
     </div>
-    <div class="opt-row">
-      <label for="gapRange">片段间隔</label>
-      <input type="range" id="gapRange" min="0" max="3" step="0.1" value="0">
-      <output id="gapValue">0.0 秒</output>
-    </div>
-    <label class="checkbox-row" for="normalizeChk">
-      <input type="checkbox" id="normalizeChk">
-      <span>峰值归一化（统一各段音量，避免某段太轻）</span>
-    </label>
-    <p class="hint" id="formatHint"></p>
-    <p class="hint" id="sizeEst"></p>
-  </section>
+  </header>
+
+  <main>
+    <!-- 步骤 1：添加片段 -->
+    <section class="card" aria-labelledby="step1Title">
+      <div class="card-head">
+        <span class="step-badge" aria-hidden="true">1</span>
+        <div class="card-head-text">
+          <h2 id="step1Title">添加片段</h2>
+          <p class="card-desc">导入音频文件，或直接录一段</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="btn-row">
+          <!-- label[for] 原生激活 file input：iOS WKWebView（Chrome/Edge/Firefox on iOS 均强制使用）
+               不响应 JS 对 display:none 的 input 的程序化 click()，必须走 label 关联 + 视觉隐藏 -->
+          <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
+          <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
+        </div>
+        <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
+        <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
+             会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
+        <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
+        <label class="alt-import" for="fileInputAny" id="btnImportAny">选不到文件？用兼容模式选择（不过滤格式）</label>
+        <div class="rec-indicator">
+          <span class="rec-dot" id="recordDot" hidden></span>
+          <span id="recordTime"></span>
+        </div>
+        <p class="hint">支持多选：mp3 / m4a / wav / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
+      </div>
+    </section>
+
+    <!-- 步骤 2：片段列表（顺序、试听、剪切、复制） -->
+    <section class="card" aria-labelledby="step2Title">
+      <div class="card-head">
+        <span class="step-badge" aria-hidden="true">2</span>
+        <div class="card-head-text">
+          <h2 id="step2Title">调整顺序</h2>
+          <p class="card-desc">按住 ⠿ 拖动排序，可试听、剪切或复制</p>
+        </div>
+        <span class="count" id="listCount">0 段</span>
+      </div>
+      <div class="card-body card-body-flush">
+        <ul class="seg-list" id="segmentList"></ul>
+      </div>
+      <div class="card-foot">
+        <button class="btn ghost" id="btnClear" type="button">清空列表</button>
+      </div>
+    </section>
+
+    <!-- 步骤 3：输出与选项（标签列 / 控件列 / 数值列三列对齐） -->
+    <section class="card" aria-labelledby="step3Title">
+      <div class="card-head">
+        <span class="step-badge" aria-hidden="true">3</span>
+        <div class="card-head-text">
+          <h2 id="step3Title">输出与选项</h2>
+          <p class="card-desc">格式、位率、间隔与音量</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="opt-group">
+          <div class="opt-row">
+            <label class="opt-label">输出格式</label>
+            <div class="seg-control" id="formatGroup">
+              <button type="button" class="seg-btn" data-fmt="wav">WAV</button>
+              <button type="button" class="seg-btn active" data-fmt="mp3">MP3</button>
+              <button type="button" class="seg-btn" data-fmt="m4a" id="fmtM4a" hidden>M4A</button>
+            </div>
+          </div>
+          <div class="opt-row opt-row-select" id="bitrateRow">
+            <label class="opt-label" for="bitrateSel">MP3 位率</label>
+            <select id="bitrateSel">
+              <option value="96">96 kbps · 编码较慢</option>
+              <option value="128" selected>128 kbps</option>
+              <option value="192">192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+            </select>
+          </div>
+          <div class="opt-row">
+            <label class="opt-label" for="gapRange">片段间隔</label>
+            <input type="range" id="gapRange" min="0" max="3" step="0.1" value="0">
+            <output id="gapValue">0.0 秒</output>
+          </div>
+          <label class="checkbox-row" for="normalizeChk">
+            <input type="checkbox" id="normalizeChk">
+            <span>峰值归一化（统一各段音量，避免某段太轻）</span>
+          </label>
+        </div>
+        <p class="hint" id="formatHint"></p>
+        <p class="hint" id="sizeEst"></p>
+      </div>
+    </section>
+  </main>
 
   <audio id="segPlayer" preload="none" hidden></audio>
 
-  <!-- 进度 -->
+  <!-- 进度：独立于卡片，位于底部操作栏上方 -->
   <div id="progressWrap" hidden>
     <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
     <div class="progress-meta">
@@ -103,30 +144,37 @@
     </div>
   </div>
 
-  <p id="status"></p>
+  <p id="status" role="status" aria-live="polite"></p>
 
-  <!-- 结果 -->
-  <section class="card" id="resultBox" hidden>
-    <h2>4. 完成</h2>
-    <!-- 大文件不自动加载：iOS 上在成功瞬间创建 objectURL + 让 audio 载入大 Blob
-         会触发 WebView 内存上限导致页面被系统重载（分享按钮来不及出现） -->
-    <audio id="resultAudio" controls preload="none" hidden></audio>
-    <p id="resultMeta"></p>
-    <div class="btn-row">
-      <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
-      <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
-    </div>
-    <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
-         iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
-    <div id="saveBox" hidden>
-      <div class="btn-row">
-        <button class="btn ghost btn-lg" id="btnSaveFile" type="button">💾 生成保存链接</button>
+  <!-- 结果：大文件不自动加载，避免 iOS 在成功瞬间创建 objectURL 触发页面重载 -->
+  <section class="card card-result" id="resultBox" hidden>
+    <div class="card-head">
+      <span class="step-badge step-badge-done" aria-hidden="true">✓</span>
+      <div class="card-head-text">
+        <h2>合并完成</h2>
+        <p class="card-desc">试听、分享，或保存到「文件」App</p>
       </div>
-      <a class="btn primary btn-lg save-link" id="saveLink" href="#" target="_blank" rel="noopener" hidden>💾 点此保存（存到「文件」App）</a>
-      <p class="hint" id="saveHint"></p>
+    </div>
+    <div class="card-body">
+      <audio id="resultAudio" controls preload="none" hidden></audio>
+      <p id="resultMeta"></p>
+      <div class="btn-row">
+        <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
+        <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
+      </div>
+      <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
+           iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
+      <div id="saveBox" hidden>
+        <div class="btn-row">
+          <button class="btn ghost btn-lg" id="btnSaveFile" type="button">💾 生成保存链接</button>
+        </div>
+        <a class="btn primary btn-lg save-link" id="saveLink" href="#" target="_blank" rel="noopener" hidden>💾 点此保存（存到「文件」App）</a>
+        <p class="hint" id="saveHint"></p>
+      </div>
     </div>
   </section>
 
+  <!-- 底部固定操作栏：唯一主操作，始终可见 -->
   <div class="action-bar" id="actionBar" hidden>
     <div class="action-inner">
       <span class="action-summary" id="actionSummary"></span>

@@ -26,12 +26,13 @@ async function test(name, fn) {
   console.log('  ok - ' + name);
 }
 
-/** 解析 MP3 帧序列，返回帧数与消耗字节数 */
+/** 解析 MP3 帧序列，返回帧数、消耗字节数与首帧声道模式（3=单声道） */
 function parseFrames(buf) {
   const BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]; // MPEG1 Layer3
   const SRATES = [44100, 48000, 32000]; // MPEG1
   let pos = 0;
   let frames = 0;
+  let firstMode = -1;
   while (pos + 4 <= buf.length) {
     if (buf[pos] !== 0xFF || (buf[pos + 1] & 0xE0) !== 0xE0) break; // 同步字
     const ver = (buf[pos + 1] >> 3) & 3;   // 3 = MPEG1
@@ -43,12 +44,13 @@ function parseFrames(buf) {
     const bitrate = BITRATES[brIdx] * 1000;
     const srate = SRATES[srIdx];
     if (!bitrate || !srate) break;
+    if (firstMode < 0) firstMode = (buf[pos + 3] >> 6) & 3; // 0=立体声 1=joint 2=dual 3=单声道
     const frameLen = Math.floor((144 * bitrate) / srate) + pad;
     if (frameLen <= 0) break;
     pos += frameLen;
     frames++;
   }
-  return { frames: frames, consumed: pos };
+  return { frames: frames, consumed: pos, firstMode: firstMode };
 }
 
 function sineStereo(freq, amp, sec) {
@@ -145,6 +147,30 @@ async function main() {
   await test('encodeMP3: 空 PCM 报错', async () => {
     const pcm = { sampleRate: 44100, channels: [new Float32Array(0)] };
     await assert.rejects(() => Core.encodeMP3(pcm, { lamejs: lamejs }), /PCM 为空/);
+  });
+
+  await test('encodeMP3: 单声道输出的 MP3 帧头标记为单声道（mode=3）', async () => {
+    const mono = { sampleRate: 44100, channels: [sineStereo(440, 0.3, 1).channels[0]] };
+    const out = await Core.encodeMP3(mono, { lamejs: lamejs, kbps: 128 });
+    const info = parseFrames(out);
+    assert.ok(info.frames > 0, '应产出 MP3 帧');
+    assert.strictEqual(info.firstMode, 3, '单声道帧头 channel_mode 应为 3');
+  });
+
+  await test('encodeMP3: 立体声输出不会被误标为单声道', async () => {
+    const out = await Core.encodeMP3(sineStereo(440, 0.3, 1), { lamejs: lamejs, kbps: 128 });
+    const info = parseFrames(out);
+    assert.ok(info.frames > 0, '应产出 MP3 帧');
+    assert.notStrictEqual(info.firstMode, 3, '立体声帧头 channel_mode 不应为 3');
+  });
+
+  await test('encodeMP3: 拒绝 3 声道输入（lamejs 只支持 1/2 声道）', async () => {
+    const three = {
+      sampleRate: 44100,
+      channels: [new Float32Array(1152), new Float32Array(1152), new Float32Array(1152)]
+    };
+    await assert.rejects(() => Core.encodeMP3(three, { lamejs: lamejs, kbps: 128 }),
+      /只支持单声道或立体声/);
   });
 
   console.log('[mp3] 全部通过：' + passed + ' 项测试');

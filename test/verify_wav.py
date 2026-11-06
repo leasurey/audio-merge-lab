@@ -56,6 +56,23 @@ def main() -> int:
           f"帧数={meta['frames']}  时长={meta['durationSec']}s")
     print(f"  文件大小={actual_size} B  峰值={peak:.4f}  "
           f"间隔区峰值={gap_peak:.6f}  B段RMS={rms_b:.4f}")
+
+    # 单声道产物交叉校验（由 core.test.js 写出）：确认单/双声道转换没有破坏 WAV 头。
+    # 产物缺失必须报错——静默跳过会让「自动单声道」这条路径失去独立校验。
+    mono_path = out_dir / "merge-mono-test.wav"
+    assert mono_path.exists(), f"缺少 {mono_path}，单声道交叉校验不可跳过"
+    with wave.open(str(mono_path), "rb") as wm:
+        assert wm.getnchannels() == 1, "单声道 WAV 声道数不符"
+        assert wm.getframerate() == meta["sampleRate"], "单声道 WAV 采样率不符"
+        assert wm.getsampwidth() == 2, "单声道 WAV 位深不符"
+        mono_frames = wm.getnframes()
+        mono_raw = wm.readframes(mono_frames)
+    mono_size = mono_path.stat().st_size
+    assert mono_size == 44 + mono_frames * 2, (
+        f"单声道 WAV 文件大小与帧数不符: {mono_size} != {44 + mono_frames * 2}"
+    )
+    assert len(mono_raw) == mono_frames * 2, "单声道 WAV 数据长度不符"
+    print(f"  单声道校验通过: 1 声道 / {mono_frames} 帧 / {mono_size} B")
     return 0
 
 
