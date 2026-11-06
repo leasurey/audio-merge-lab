@@ -10,3 +10,5 @@ uploads/
 # Python 交叉校验脚本（test/verify_wav.py）产生的字节码缓存
 __pycache__/
 *.pyc
+# 应用发布工具在工作区根目录生成的内部标记文件
+.wbapp_*.genie
