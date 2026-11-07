@@ -3,54 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="description" content="录音合并器使用指南：三步完成音频合并，格式选择、长音频注意事项与常见问题。">
 <title>使用指南 · 录音合并器</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0;
-    background: #0f1115; color: #e8ebf0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    font-size: 15px; line-height: 1.65;
-    -webkit-text-size-adjust: 100%;
-  }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
-  h1 { font-size: 20px; margin: 6px 0 4px; }
-  h2 { font-size: 16px; margin: 22px 0 8px; }
-  .sub { color: #9aa4b2; font-size: 13px; margin: 0 0 6px; }
-  .nav { font-size: 13px; margin: 10px 0 4px; }
-  .nav a { color: #8ab4ff; margin-right: 14px; text-decoration: none; }
-  .card {
-    background: #171b22; border: 1px solid #2a313c; border-radius: 14px;
-    padding: 14px; margin: 12px 0;
-  }
-  .step { display: flex; gap: 10px; margin: 12px 0; }
-  .num {
-    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
-    background: #1d222b; border: 1px solid #2a313c; color: #8ab4ff;
-    font-size: 12px; display: flex; align-items: center; justify-content: center;
-    margin-top: 3px;
-  }
-  .step b { color: #e8ebf0; }
-  .step p { margin: 2px 0 0; color: #b9c2ce; font-size: 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
-  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #232932; vertical-align: top; }
-  th { color: #9aa4b2; font-weight: 600; }
-  td b { color: #e8ebf0; }
-  .hint { font-size: 12px; color: #9aa4b2; }
-  .tag {
-    display: inline-block; font-size: 11px; font-weight: 700; border-radius: 5px;
-    padding: 1px 6px; margin-right: 4px;
-  }
-  .tag.ok { background: #17372a; color: #6fd7a2; }
-  .tag.warn { background: #33290f; color: #f0d08a; }
-  .faq q { display: block; font-weight: 600; color: #e8ebf0; margin-top: 10px; quotes: none; }
-  .faq p { margin: 2px 0 0; color: #b9c2ce; font-size: 14px; }
-  .back { text-align: center; margin-top: 22px; font-size: 14px; }
-  .back a { color: #8ab4ff; }
-  a { color: #8ab4ff; }
+/*DOC*/
 </style>
 </head>
 <body>
@@ -64,7 +22,7 @@
   </div>
 
   <section class="card">
-    <h2 style="margin-top:4px">三步上手</h2>
+    <h2>三步上手</h2>
     <div class="step">
       <div class="num">1</div>
       <div>
@@ -89,7 +47,7 @@
   </section>
 
   <section class="card">
-    <h2 style="margin-top:4px">输出格式怎么选</h2>
+    <h2>输出格式怎么选</h2>
     <table>
       <tr><th>格式</th><th>特点</th><th>适合</th></tr>
       <tr>
@@ -114,8 +72,8 @@
   </section>
 
   <section class="card">
-    <h2 style="margin-top:4px">长音频与性能</h2>
-    <p style="color:#b9c2ce;font-size:14px;margin:6px 0">
+    <h2>长音频与性能</h2>
+    <p>
       合并是流式的：逐段分块转换，结果直接写进浏览器本地存储（支持 OPFS 时），
       每段处理完立刻释放。两个 40 分钟的录音合并，内存峰值在 1 GB 以内。
     </p>
@@ -126,7 +84,7 @@
   </section>
 
   <section class="card">
-    <h2 style="margin-top:4px">常见问题</h2>
+    <h2>常见问题</h2>
     <div class="faq">
       <q>点「导入音频文件」没反应，或选择器里没有音频？</q>
       <p>点按钮下方「选不到文件？用兼容模式选择（不过滤格式）」——该入口不做文件类型过滤，任何支持文件选择的浏览器都会弹出选择器。</p>

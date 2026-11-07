@@ -3,70 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="description" content="检测当前浏览器是否能完整运行录音合并器。纯 ES5 编写，兼容极旧内核。">
 <title>兼容性自检 · 录音合并器</title>
 <style>
-  /* 纯 CSS，不用 CSS 变量：旧内核（Chrome 49 之前）不支持 var() */
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0;
-    background: #0f1115; color: #e8ebf0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    font-size: 15px; line-height: 1.55;
-    -webkit-text-size-adjust: 100%;
-  }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
-  h1 { font-size: 20px; margin: 6px 0 6px; }
-  .sub { color: #9aa4b2; font-size: 13px; margin: 0 0 14px; }
-  .card {
-    background: #171b22; border: 1px solid #2a313c; border-radius: 14px;
-    padding: 14px; margin-bottom: 14px;
-  }
-  .card h2 { font-size: 15px; margin: 0 0 10px; }
-  .verdict {
-    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px;
-    font-weight: 600; border: 1px solid #2a313c; background: #1d222b;
-  }
-  .verdict.ok { background: #14301f; border-color: #2f6b4a; color: #86e0b0; }
-  .verdict.warn { background: #33290f; border-color: #7a5f22; color: #f0d08a; }
-  .verdict.bad { background: #33181a; border-color: #7a3a35; color: #ffb3ab; }
-  .verdict .detail { display: block; font-weight: normal; font-size: 13px; margin-top: 4px; color: inherit; opacity: .85; }
-  .kv { font-size: 13px; color: #9aa4b2; word-break: break-all; }
-  .kv b { color: #e8ebf0; font-weight: 600; }
-  ul.probes { list-style: none; margin: 0; padding: 0; }
-  ul.probes li {
-    display: flex; align-items: flex-start; gap: 8px;
-    padding: 7px 0; border-bottom: 1px solid #232932; font-size: 14px;
-  }
-  ul.probes li:last-child { border-bottom: none; }
-  .tag {
-    flex: 0 0 auto; font-size: 11px; font-weight: 700; border-radius: 5px;
-    padding: 2px 6px; margin-top: 2px;
-  }
-  .tag.pass { background: #17372a; color: #6fd7a2; }
-  .tag.fail { background: #3a1f1e; color: #ff9d94; }
-  .tag.na { background: #2a2f38; color: #9aa4b2; }
-  .p-label { flex: 1; min-width: 0; }
-  .p-note { display: block; font-size: 12px; color: #9aa4b2; margin-top: 1px; }
-  textarea {
-    width: 100%; border-radius: 10px; border: 1px solid #2a313c;
-    background: #0f1115; color: #cfd5de; font-size: 12px; line-height: 1.5;
-    padding: 10px; resize: vertical;
-    font-family: Menlo, Consolas, monospace;
-    -webkit-appearance: none; appearance: none;
-  }
-  button {
-    -webkit-appearance: none; appearance: none; border: none; cursor: pointer;
-    background: #4f8cff; color: #fff; font-size: 15px; font-weight: 600;
-    border-radius: 10px; padding: 11px 16px; margin-top: 10px; width: 100%;
-    -webkit-tap-highlight-color: transparent;
-  }
-  button:active { background: #3a6fd8; }
-  .hint { font-size: 12px; color: #9aa4b2; margin: 8px 0 0; }
-  .back { text-align: center; margin-top: 6px; }
-  .back a { color: #8ab4ff; font-size: 14px; }
+/*DOC*/
 </style>
 </head>
 <body>
@@ -90,7 +32,7 @@
   <section class="card">
     <h2>文件诊断（可选）</h2>
     <p class="hint">选一个导入失败的文件：本页会显示它的大小、真实格式（魔数嗅探），并测试本机能否解码。文件只在本地读取，不会上传。</p>
-    <input type="file" id="diagFile" style="width:100%;margin-top:8px;color:#cfd5de;font-size:13px;">
+    <input type="file" id="diagFile" style="width:100%;margin-top:8px;">
     <div class="kv" id="diagOut" style="margin-top:10px;"></div>
   </section>
 
@@ -443,17 +385,17 @@
       try {
         var ret = ctx.decodeAudioData(buf, function (ab) {
           diagLine('平台解码', '成功（' + ab.duration.toFixed(2) + 's / ' + ab.sampleRate +
-            'Hz / ' + ab.numberOfChannels + ' 声道）', '#6fd7a2');
-          diagLine('结论', '本机可解码；若应用内仍失败，请把本报告回传', '#6fd7a2');
+            'Hz / ' + ab.numberOfChannels + ' 声道）', 'var(--ok)');
+          diagLine('结论', '本机可解码；若应用内仍失败，请把本报告回传', 'var(--ok)');
         }, function (err) {
           diagLine('平台解码', '失败：' + ((err && err.message) || 'EncodingError'), '#ff9d94');
-          diagLine('结论', '本机解码器不支持该文件——应用会用内置解码器重试（WAV / MP3）；其他格式需先转换', '#f0d08a');
+          diagLine('结论', '本机解码器不支持该文件——应用会用内置解码器重试（WAV / MP3）；其他格式需先转换', 'var(--warn)');
           var more = document.createElement('div');
           more.style.margin = '8px 0';
           var link = document.createElement('a');
           link.href = 'convert.html';
           link.textContent = '→ 查看格式转换方法';
-          link.style.color = '#8ab4ff';
+          link.style.color = 'var(--tint)';
           more.appendChild(link);
           diagOut.appendChild(more);
         });

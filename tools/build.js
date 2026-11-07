@@ -108,9 +108,19 @@ fs.writeFileSync(dist('index.html'), html);
 
 /* ---------------- 2. PWA 资源 ---------------- */
 fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webmanifest'));
-fs.copyFileSync(path.join(root, 'compat.html'), dist('compat.html'));
-fs.copyFileSync(path.join(root, 'guide.html'), dist('guide.html'));
-fs.copyFileSync(path.join(root, 'convert.html'), dist('convert.html'));
+
+/* 子页面：注入共享文档样式（src/doc.css）后写出。
+ * 三个页面共用一套语义色/字号/圆角，避免各自维护一份内联样式而逐渐跑偏。 */
+const docCss = read('src/doc.css');
+for (const page of ['compat.html', 'guide.html', 'convert.html']) {
+  const src = read(page);
+  if (!src.includes('/*DOC*/')) {
+    throw new Error(page + ' 缺少 /*DOC*/ 样式占位符');
+  }
+  const out = src.replace('/*DOC*/', () => docCss);
+  if (out.indexOf('\u0000') !== -1) throw new Error(page + ' 含 NUL 字节');
+  fs.writeFileSync(dist(page), out);
+}
 // 独立许可文件：静态托管时可直接访问，不依赖单文件 HTML 的注释
 fs.copyFileSync(path.join(root, 'THIRD-PARTY-NOTICES.md'), dist('THIRD-PARTY-NOTICES.md'));
 fs.copyFileSync(path.join(root, 'LICENSE'), dist('LICENSE'));

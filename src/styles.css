@@ -55,8 +55,10 @@
   --bar-bg: rgba(249, 249, 249, 0.88);
   --shadow-seg: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
 
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  /* 中文优先命中苹方：Apple 设备上 -apple-system 即 SF/苹方；Windows 无苹方，
+     依次回落到冬青黑 / 微软雅黑。不打包字体文件（苹方为 Apple 字体，不可再分发）。 */
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {

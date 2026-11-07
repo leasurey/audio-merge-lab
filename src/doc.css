@@ -1,0 +1,424 @@
+/* 文档页共用样式 —— 使用指南 / 格式转换 / 兼容性自检
+ *
+ * 与主页同一套设计依据：
+ *  - 明暗两套语义色（HIG · Color），不硬编码具体界面色
+ *  - 8pt 间距网格、层级化圆角
+ *  - 中文优先的系统字体栈，Apple 设备上命中苹方（PingFang SC）
+ *
+ * 这里只放文档页需要的组件，主页那套交互控件在 src/styles.css。
+ */
+:root {
+  color-scheme: light;
+
+  --r-card: 14px;
+  --r-control: 10px;
+  --r-pill: 999px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* 语义色 · Light */
+  --bg: #f2f2f7;
+  --card: #ffffff;
+  --fill: rgba(120, 120, 128, 0.12);
+  --separator: rgba(60, 60, 67, 0.12);
+  --label: #000000;
+  --label-2: rgba(60, 60, 67, 0.72);
+  --label-3: rgba(60, 60, 67, 0.60);
+  --tint: #007aff;
+  --ok: #1a7f3c;
+  --ok-bg: rgba(52, 199, 89, 0.12);
+  --warn: #8a4300;
+  --warn-bg: rgba(255, 149, 0, 0.14);
+  --danger: #d70015;
+  --danger-bg: rgba(255, 59, 48, 0.10);
+
+  /* 中文优先：Apple 平台上 -apple-system 即苹方/SF，Windows 回落到雅黑 */
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Courier New", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #000000;
+    --card: #1c1c1e;
+    --fill: rgba(118, 118, 128, 0.24);
+    --separator: rgba(84, 84, 88, 0.60);
+    --label: #ffffff;
+    --label-2: rgba(235, 235, 245, 0.70);
+    --label-3: rgba(235, 235, 245, 0.55);
+    --tint: #0a84ff;
+    --ok: #30d158;
+    --ok-bg: rgba(48, 209, 88, 0.16);
+    --warn: #ff9f0a;
+    --warn-bg: rgba(255, 159, 10, 0.16);
+    --danger: #ff453a;
+    --danger-bg: rgba(255, 69, 58, 0.16);
+  }
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  /* 先写字面值再写变量：不支持 var() 的极旧内核会丢掉第二条声明，
+     退化成浏览器默认排版（内容仍完整可读），不会只剩白底黑字无间距。 */
+  background: #f2f2f7;
+  background: var(--bg);
+  color: #000000;
+  color: var(--label);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: calc(var(--sp-6) + env(safe-area-inset-top)) var(--sp-4)
+    calc(var(--sp-8) + env(safe-area-inset-bottom));
+}
+
+/* ---------- 页头 ---------- */
+h1 {
+  margin: 0 0 var(--sp-1);
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+.sub {
+  margin: 0 0 var(--sp-3);
+  color: var(--label-2);
+  font-size: 15px;
+}
+
+.nav {
+  margin: 0 0 var(--sp-5);
+  font-size: 15px;
+}
+
+.nav a {
+  color: var(--tint);
+  text-decoration: none;
+  margin-right: var(--sp-4);
+}
+
+.nav a:hover { text-decoration: underline; }
+
+/* ---------- 分组卡片 ---------- */
+.card {
+  background: var(--card);
+  border-radius: var(--r-card);
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-3);
+}
+
+.card h2 {
+  margin: 0 0 var(--sp-3);
+  font-size: 17px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.card h2:first-child { margin-top: 0; }
+
+.card h3 {
+  margin: var(--sp-4) 0 var(--sp-2);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.card p {
+  margin: 0 0 var(--sp-2);
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+.card p:last-child { margin-bottom: 0; }
+
+.card b, .card strong { color: var(--label); font-weight: 600; }
+
+a { color: var(--tint); }
+
+code, kbd {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--fill);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.hint {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--label-3);
+  margin: var(--sp-2) 0 0;
+}
+
+/* ---------- 表格 ---------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: var(--sp-2) 0 0;
+  table-layout: auto;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px var(--sp-2);
+  border-bottom: 1px solid var(--separator);
+  vertical-align: top;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 首列一般是格式名（短），不换行以免把宽度让给错列；
+   末列是"适合"这类短语，给一个下限避免被挤成竖排 */
+th:first-child, td:first-child { white-space: nowrap; }
+th:last-child, td:last-child { min-width: 88px; }
+
+tr:last-child td { border-bottom: 0; }
+
+th {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-3);
+  padding-bottom: var(--sp-2);
+}
+
+td { color: var(--label-2); }
+td b, td strong { color: var(--label); font-weight: 600; }
+
+/* ---------- 步骤（使用指南） ---------- */
+.step {
+  display: flex;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0;
+}
+
+.step:first-of-type { margin-top: var(--sp-2); }
+.step:last-of-type { margin-bottom: 0; }
+
+.num {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--label-2);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.step > div:last-child { min-width: 0; }
+
+/* 只命中步骤标题那个 b；正文里的 <b> 是行内强调，不能变成独立块 */
+.step > div:last-child > b:first-child {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.step p b, .step p strong { color: var(--label); font-weight: 600; }
+
+.step p {
+  margin: 3px 0 0;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+/* ---------- 标签 ---------- */
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 5px;
+  padding: 1px 6px;
+  margin-left: 4px;
+  vertical-align: 1px;
+  background: var(--fill);
+  color: var(--label-2);
+}
+
+.tag.ok, .tag.best { background: var(--ok-bg); color: var(--ok); }
+.tag.mid { background: var(--warn-bg); color: var(--warn); }
+.tag.warn { background: var(--danger-bg); color: var(--danger); }
+
+/* ---------- 提示框 ---------- */
+.warn-box {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: var(--r-control);
+  padding: var(--sp-3);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: var(--sp-3) 0 0;
+}
+
+/* ---------- 常见问题 ---------- */
+.faq q {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+  margin-top: var(--sp-4);
+  quotes: none;
+}
+
+.faq q:first-child { margin-top: 0; }
+
+.faq p {
+  margin: 4px 0 0;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+/* ---------- 兼容性自检页 ---------- */
+.verdict {
+  background: var(--card);
+  border-radius: var(--r-card);
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-3);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.verdict.ok { color: var(--ok); }
+.verdict.warn { color: var(--warn); }
+.verdict.bad { color: var(--danger); }
+
+.kv {
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--label-2);
+  word-break: break-word;
+}
+
+.kv b { color: var(--label); font-weight: 600; }
+
+.probes {
+  display: grid;
+  gap: 1px;
+  background: var(--separator);
+  border-radius: var(--r-control);
+  overflow: hidden;
+  margin-top: var(--sp-3);
+}
+
+.probes > * {
+  background: var(--card);
+  padding: 10px var(--sp-3);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.probes li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.probes .tag {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  min-width: 42px;
+  text-align: center;
+}
+
+.probes .tag.pass { background: var(--ok-bg); color: var(--ok); }
+.probes .tag.fail { background: var(--danger-bg); color: var(--danger); }
+.probes .tag.na { background: var(--warn-bg); color: var(--warn); }
+
+.p-label {
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--label);
+}
+
+.p-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--label-3);
+}
+
+pre, .report {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--fill);
+  color: var(--label-2);
+  border-radius: var(--r-control);
+  padding: var(--sp-3);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: var(--sp-3) 0 0;
+}
+
+/* ---------- 按钮 ---------- */
+button, .btn {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--tint);
+  background: var(--fill);
+  border: 0;
+  border-radius: var(--r-control);
+  padding: 10px var(--sp-4);
+  min-height: 44px;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+
+button:active { opacity: 0.6; }
+
+input[type="file"] {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+/* ---------- 返回 ---------- */
+.back {
+  text-align: center;
+  margin: var(--sp-6) 0 var(--sp-3);
+  font-size: 15px;
+}
+
+.back a { color: var(--tint); text-decoration: none; }
+
+.copy { margin: var(--sp-3) 0 0; }
+
+@media (max-width: 520px) {
+  table { font-size: 13px; }
+  th, td { padding: 9px 6px; }
+  th:last-child, td:last-child { min-width: 64px; }
+}
+
+@media (max-width: 380px) {
+  h1 { font-size: 24px; }
+  .card { padding: var(--sp-3); }
+}
