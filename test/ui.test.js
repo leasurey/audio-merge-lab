@@ -182,4 +182,27 @@ test('compat.html 区分 CSP 受限与内核不支持', () => {
   assert.ok(compat.includes("ok === null"), '受限项不得被判成缺失');
 });
 
+test('录音容器按平台排序：非 iOS 优先 opus，iOS 才优先 mp4', () => {
+  assert.ok(app.includes('function mimeCandidates'), '录音容器候选需集中一处，便于按平台排序');
+  assert.ok(app.includes('var candidates = mimeCandidates()'), 'pickMimeType 必须消费 mimeCandidates');
+
+  // 定位「非 iOS」那一支的候选数组（mimeCandidates 内、isIOSDevice 之后的第一处 return [）
+  const fnAt = app.indexOf('function mimeCandidates');
+  assert.ok(fnAt > 0);
+  const body = app.slice(fnAt, app.indexOf('function pickMimeType'));
+  const iosEnd = body.indexOf('}\n    return [');
+  assert.ok(iosEnd > 0, '应能在 iOS 分支之后找到非 iOS 候选列表');
+  const list = body.slice(iosEnd, body.indexOf('];', iosEnd));
+  const webmAt = list.indexOf("'audio/webm;codecs=opus'");
+  const mp4At = list.indexOf("'audio/mp4;codecs=mp4a.40.2'");
+  assert.ok(webmAt > 0 && mp4At > 0, '非 iOS 候选需同时包含 webm/opus 与 mp4');
+  assert.ok(webmAt < mp4At, '非 iOS 必须优先 webm/opus，mp4 只能作为后备');
+});
+
+test('录音完整性校验：录制时长与解码时长偏差过大要给出警示', () => {
+  assert.ok(app.includes('expectDuration'), '缺少预期时长字段');
+  assert.ok(app.includes('[recordedSec]'), '录音入队需传入实际录制时长');
+  assert.ok(app.includes('实际只解出'), '缺少时长偏差提示文案');
+});
+
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

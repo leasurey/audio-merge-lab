@@ -410,9 +410,9 @@
    * 文件入队：立即生成「解码中」占位片段并渲染（用户瞬间看到反馈），
    * 然后按队列顺序解码，控制内存峰值。
    */
-  function enqueueFiles(files) {
+  function enqueueFiles(files, expectDurations) {
     var added = [];
-    Array.prototype.forEach.call(files || [], function (file) {
+    Array.prototype.forEach.call(files || [], function (file, i) {
       if (!file) return;
       state.seq++;
       var seg = {
@@ -428,6 +428,8 @@
         duration: 0,
         sampleRate: 0,
         channels: 0,
+        // 预期时长（秒）：仅应用内录音时提供，用于识别"解得出但与录制长度不符"的坏文件
+        expectDuration: (expectDurations && expectDurations[i]) || 0,
         trimStart: null,   // 剪切范围（秒）；null = 不剪切
         trimEnd: null,
         trimOpen: false    // 剪切面板是否展开
@@ -585,6 +587,17 @@
       }
 
       if (audioBuf) {
+        // 应用内录音：把"录制时长"和"解出的时长"对一遍。偏差过大意味着容器/编码器
+        // 产出的文件不完整（AAC 录制链路尤其容易出现"能解但内容不对"），必须显式
+        // 告知用户，而不是让它以杂音形式出现在成品里。
+        if (!shortWarning && seg.expectDuration > 0) {
+          var dev = Math.abs(audioBuf.duration - seg.expectDuration) / seg.expectDuration;
+          if (dev > 0.2) {
+            shortWarning = '录制约 ' + seg.expectDuration.toFixed(1) + ' 秒，实际只解出 ' +
+              audioBuf.duration.toFixed(1) + ' 秒（偏差 ' + Math.round(dev * 100) +
+              '%）——录音文件可能不完整，请试听后决定是否使用';
+          }
+        }
         seg.pcm = audioBufferToPcm(audioBuf);
         seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
         seg.released = false;      // 复制片段自己解完后必须清标记，否则下次合并又全量重解一遍
@@ -1059,15 +1072,37 @@
       : '';
   }
 
-  function pickMimeType() {
-    if (typeof MediaRecorder === 'undefined') return null;
-    var candidates = [
-      'audio/mp4;codecs=mp4a.40.2', // iOS Safari
-      'audio/mp4',
-      'audio/webm;codecs=opus',     // Android Chrome
+  /**
+   * 录音容器候选顺序（按平台）。
+   *
+   * 为什么要分平台：Chromium 130 前后开始支持 `audio/mp4` 录制，于是"mp4 排第一"
+   * 的旧顺序会让**安卓/桌面 Chromium 静默地改用 AAC 容器录音**，而这批设备过去
+   * 一直录的是 webm/opus。AAC 录制链路较新、边缘情况多，出现"合并后杂音/段落缺失"
+   * 的风险明显高于久经使用的 opus 路径。因此：
+   *   - 非 iOS：webm/opus 优先（opus 也是本项目降级链与测试覆盖最好的路径）
+   *   - iOS：只能 mp4（Safari 不支持 webm 录制），保持原顺序
+   */
+  function mimeCandidates() {
+    if (isIOSDevice()) {
+      return [
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm'
+      ];
+    }
+    return [
+      'audio/webm;codecs=opus',
       'audio/webm',
+      'audio/mp4;codecs=mp4a.40.2',
+      'audio/mp4',
       'audio/ogg;codecs=opus'
     ];
+  }
+
+  function pickMimeType() {
+    if (typeof MediaRecorder === 'undefined') return null;
+    var candidates = mimeCandidates();
     for (var i = 0; i < candidates.length; i++) {
       if (MediaRecorder.isTypeSupported(candidates[i])) return candidates[i];
     }
@@ -1146,8 +1181,14 @@
       return;
     }
     var blob = new Blob(state.recordChunks, { type: state.recordChunks[0].type || 'audio/webm' });
+    // 录制实际时长（秒）：用于和"解码出来的时长"比对，识别坏容器/坏编码器产出的残文件
+    var recordedSec = state.recordStart ? (Date.now() - state.recordStart) / 1000 : 0;
+    state.recordStart = 0;
     setStatus('录音结束（' + fmtSize(blob.size) + '），加入列表并解码…');
-    enqueueFiles([new File([blob], '录音 ' + nowStamp() + '.' + guessExt(blob.type), { type: blob.type })]);
+    enqueueFiles(
+      [new File([blob], '录音 ' + nowStamp() + '.' + guessExt(blob.type), { type: blob.type })],
+      [recordedSec]
+    );
   }
 
   function guessExt(mime) {
