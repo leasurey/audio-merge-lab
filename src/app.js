@@ -780,6 +780,74 @@
     return mp3DecoderPromise;
   }
 
+  var aacDecoderPromise = null;
+  function loadAacDecoderModule() {
+    if (window['aac-decoder']) return;
+    var b64 = window.__AACDEC_B64;
+    if (!b64) throw new Error('内置 AAC 解码器未随页面加载');
+    if (typeof TextDecoder !== 'function') {
+      throw new Error('浏览器缺少 TextDecoder，无法启用内置 AAC 解码器');
+    }
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var src = new TextDecoder('utf-8').decode(bytes);
+    (0, eval)(src); // 间接 eval：挂载 globalThis['aac-decoder']
+  }
+
+  /**
+   * 惰性初始化内置 WASM AAC 解码器（faad2 内核，与平台解码器完全独立）。
+   * @param {Uint8Array|null} asc AudioSpecificConfig（MP4 esds 里提取）；
+   *        null = ADTS 裸流模式（由解码器自行识别）
+   */
+  function getAacDecoder(asc) {
+    if (aacDecoderPromise) return aacDecoderPromise;
+    try {
+      loadAacDecoderModule();
+    } catch (e) {
+      aacDecoderPromise = Promise.reject(e);
+      return aacDecoderPromise;
+    }
+    var lib = window['aac-decoder'];
+    if (!lib || typeof lib.AACDecoder !== 'function') {
+      aacDecoderPromise = Promise.reject(new Error('内置 AAC 解码器未加载'));
+      return aacDecoderPromise;
+    }
+    var dec = asc
+      ? new lib.AACDecoder({ audioSpecificConfig: asc })
+      : new lib.AACDecoder();
+    aacDecoderPromise = dec.ready.then(function () { return dec; });
+    return aacDecoderPromise;
+  }
+
+  /**
+   * WASM AAC 解码：安卓平台 AAC 解码器（MediaCodec）会随机丢帧且不报错，
+   * 平台解码结果比基准短时改用此路径——faad2 在 WASM 里跑，全平台行为一致。
+   * @param {Uint8Array} bytes 完整文件字节
+   * @param {string} container sniffFormat 的 container（'mp4' 或 'aac-adts'）
+   * @returns {Promise<{pcm:Object, decoder:string}|null>} null = 结构不支持
+   */
+  async function fallbackDecodeAac(bytes, container) {
+    var ex = null;
+    var adts = container === 'aac-adts';
+    if (!adts) {
+      ex = AudioCore.mp4ExtractAac(bytes);
+      if (!ex) return null;
+    }
+    var dec = await getAacDecoder(adts ? null : ex.asc);
+    var out = adts ? await dec.decodeFile(bytes) : await dec.decodeFrames(ex.frames);
+    if (!out || !out.samplesDecoded || !out.channelData || !out.channelData.length) {
+      throw new Error('内置 AAC 解码器未产出音频数据');
+    }
+    if ((out.errors || []).length) {
+      console.warn('内置 AAC 解码器报了 ' + out.errors.length + ' 个非致命错误');
+    }
+    return {
+      pcm: { sampleRate: out.sampleRate, channels: out.channelData },
+      decoder: 'wasm-faad2'
+    };
+  }
+
   /**
    * 兜底解码：按嗅探到的实际格式选择内置解析器。
    * @param {Uint8Array} bytes 文件字节
@@ -802,6 +870,11 @@
         pcm: { sampleRate: out.sampleRate, channels: out.channelData },
         decoder: 'mpg123'
       };
+    }
+    // MP4/M4A（AAC）与 ADTS 裸流：安卓平台 AAC 解码器会随机丢帧，
+    // 失败或丢帧时改用内置 faad2（WASM）解码
+    if (info.container === 'mp4' || info.container === 'aac-adts') {
+      return await fallbackDecodeAac(bytes, info.container);
     }
     return null;
   }
@@ -886,25 +959,54 @@
 
       if (audioBuf) {
         /* 解码速度校正（丢帧兜底）：重试后仍比基准短，说明丢帧在多次解码中都发生了。
-         * 按比例校正有效采样率，把残缺音频拉回正确总时长——掉帧处仍是缺口（无法凭空
-         * 补回内容），但速度恢复正确，刺啦声的密度和变调会显著减轻。 */
+         * 先尝试 WASM AAC 解码器（faad2，不走平台解码器）——若它解出更完整的结果
+         * （更接近基准时长），优先采用；仅当 WASM 不可用/失败时才按比例校正采样率
+         * （缺口无法补回，只能拉回总时长）。 */
+        var usedWasm = false;
         var decRate = audioBuf.sampleRate;
+        var declaredDur = audioBuf.duration;
         var decFix = null;
-        if (trueDur) {
-          var devT = Math.abs(audioBuf.duration - trueDur) / trueDur;
+        if (trueDur && audioBuf.duration < trueDur * 0.97) {
+          var sniff2 = AudioCore.sniffFormat(headBytes);
+          if (sniff2.container === 'mp4' || sniff2.container === 'aac-adts') {
+            try {
+              setStatus('平台解码疑似丢帧，改用内置 AAC 解码器（faad2）…');
+              var fullBytes = new Uint8Array(await readAsArrayBuffer(seg.blob));
+              var wasmRes = await fallbackDecodeAac(fullBytes, sniff2.container);
+              var wasmDur = wasmRes.pcm.channels[0].length / wasmRes.pcm.sampleRate;
+              if (wasmDur > audioBuf.duration * 1.02) {
+                usedWasm = true;
+                seg.pcm = wasmRes.pcm;
+                seg.audioBuffer = null; // WASM 重建的 PCM 与 AudioBuffer 无关
+                decRate = wasmRes.pcm.sampleRate;
+                declaredDur = wasmDur;
+                decFix = '基准 ' + trueDur.toFixed(2) + 's / 平台解出 ' + audioBuf.duration.toFixed(2) +
+                  's → 内置解码器解出 ' + wasmDur.toFixed(2) + 's（完整）';
+                shortWarning = shortWarning ||
+                  ('本机 AAC 解码丢帧，已改用内置解码器（解出 ' + wasmDur.toFixed(1) + 's），建议试听确认');
+              }
+            } catch (eW) {
+              console.warn('WASM AAC 解码失败，回退采样率校正：', eW);
+            }
+          }
+        }
+        if (!usedWasm && trueDur) {
+          var devT = Math.abs(declaredDur - trueDur) / trueDur;
           if (devT > 0.03) {
-            decRate = Math.round(decRate * audioBuf.duration / trueDur);
-            decFix = '基准 ' + trueDur.toFixed(2) + 's / 解出 ' + audioBuf.duration.toFixed(2) +
+            decRate = Math.round(decRate * declaredDur / trueDur);
+            decFix = '基准 ' + trueDur.toFixed(2) + 's / 解出 ' + declaredDur.toFixed(2) +
               's（重试 ' + attemptDurs.length + ' 次）→ 有效采样率按 ' + decRate + 'Hz 校正';
             shortWarning = shortWarning ||
-              ('本机解码丢帧（解出 ' + audioBuf.duration.toFixed(1) + 's / 应为 ' +
+              ('本机解码丢帧（解出 ' + declaredDur.toFixed(1) + 's / 应为 ' +
                trueDur.toFixed(1) + 's），已校正速度但缺口无法补回，建议改用 MP3/WAV 素材');
           }
         }
 
-        seg.pcm = audioBufferToPcm(audioBuf);
-        seg.pcm.sampleRate = decRate;
-        if (decFix) {
+        if (!usedWasm) {
+          seg.pcm = audioBufferToPcm(audioBuf);
+          seg.pcm.sampleRate = decRate;
+        }
+        if (decFix && !usedWasm) {
           // AudioBuffer 自带的采样率声明是错的，M4A 调度路径不能再用它
           // （会按错误速度播放），改由 PCM 重建；PCM 同时拷贝为独立数组，
           // 解除对 AudioBuffer 内存的依赖。
@@ -914,19 +1016,18 @@
             own.push(new Float32Array(seg.pcm.channels[ci]));
           }
           seg.pcm.channels = own;
-          shortWarning = shortWarning ||
-            ('本机解码速度异常，已自动校正（' + decFix + '），建议试听确认');
-        } else {
+        } else if (!usedWasm) {
           seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
         }
         seg.decodeFixNote = decFix;
         seg.released = false;      // 复制片段自己解完后必须清标记，否则下次合并又全量重解一遍
         seg.warn = shortWarning; // 极短音频保留但给出试听警示；正常结果为 null
-        seg.duration = audioBuf.duration * (decRate / audioBuf.sampleRate);
+        seg.duration = usedWasm ? declaredDur : declaredDur * (decRate / audioBuf.sampleRate);
         seg.sampleRate = decRate;
         seg.channels = audioBuf.numberOfChannels;
         seg.decodeAttempts = attemptDurs;
         diagSeg(seg, '平台 decodeAudioData' +
+          (usedWasm ? '（丢帧 → 已改用内置 faad2）' : '') +
           (attemptDurs.length > 1 ? '（重试 ' + attemptDurs.length + ' 次）' : '') +
           (decFix ? '（速度已校正）' : ''));
         seg.decoding = false;
@@ -946,7 +1047,8 @@
       seg.sniff = info;
       var fb = null, fbErr = null;
       try {
-        if (info.container === 'wav' || info.container === 'mp3') {
+        if (info.container === 'wav' || info.container === 'mp3' ||
+            info.container === 'mp4' || info.container === 'aac-adts') {
           // 内置解析器需要完整文件；平台那一份已被 detach，这里按需重读
           var fullBuf = await readAsArrayBuffer(seg.blob);
           fb = await fallbackDecode(new Uint8Array(fullBuf), info);
@@ -982,7 +1084,8 @@
         seg.warn = fbShortWarn || (platformSuspicious
           ? '平台解码结果为 0 帧，内容由内置解码器还原，请试听确认后再合并'
           : null);
-        var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG' : 'WAV');
+        var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG'
+          : fb.decoder === 'wasm-faad2' ? 'AAC' : 'WAV');
         if (seg.removed) return;
         renderList();
         if (platformSuspicious) {

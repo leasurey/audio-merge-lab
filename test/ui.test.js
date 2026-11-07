@@ -202,7 +202,19 @@ test('录音容器按平台排序：非 iOS 优先 opus，iOS 才优先 mp4', ()
 test('录音完整性校验：录制时长与解码时长偏差过大要给出警示', () => {
   assert.ok(app.includes('expectDuration'), '缺少预期时长字段');
   assert.ok(app.includes('[recordedSec]'), '录音入队需传入实际录制时长');
-  assert.ok(app.includes('实际只解出'), '缺少时长偏差提示文案');
+  assert.ok(app.includes('丢帧') && app.includes('应为'), '缺少时长偏差提示文案');
+});
+
+test('安卓 AAC 丢帧兜底：WASM faad2 解码器必须就位并接入降级链', () => {
+  assert.ok(app.includes('fallbackDecodeAac'), '缺少 WASM AAC 解码入口');
+  assert.ok(app.includes('mp4ExtractAac'), 'app 必须调用核心层的 MP4 解封装');
+  assert.ok(app.includes("__AACDEC_B64"), '缺少 AAC 解码器的 base64 注入引用');
+  assert.ok(app.includes("window['aac-decoder']"), '解码器模块挂载名不正确');
+  assert.ok(fs.existsSync(path.join(root, 'src', 'vendor', 'aac-decoder.min.js')),
+    'src/vendor/aac-decoder.min.js 缺失');
+  // faad2 为 GPL-2.0：许可文本必须随包声明
+  const notices = read('THIRD-PARTY-NOTICES.md');
+  assert.ok(notices.includes('faad2'), 'THIRD-PARTY-NOTICES.md 缺少 faad2 条目');
 });
 
 test('OPFS 同步写入必须处理部分写入（否则安卓上数据整体错位）', () => {

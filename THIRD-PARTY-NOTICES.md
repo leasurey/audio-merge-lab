@@ -4,6 +4,7 @@
 |---|---|---|---|
 | lamejs（`src/vendor/lame.min.js`） | MP3 编码 | LGPL-3.0 | [zhuker/lamejs](https://github.com/zhuker/lamejs) |
 | mpg123-decoder（`src/vendor/mpg123-decoder.min.js`） | MP3 兜底解码（平台解码器失败时） | MIT | [eshaz/wasm-audio-decoders](https://github.com/eshaz/wasm-audio-decoders) → npm `mpg123-decoder@1.0.3` |
+| aac-decoder（`src/vendor/aac-decoder.min.js`） | AAC/M4A 兜底解码（安卓平台解码丢帧时） | MIT（包裹层）+ 内含 faad2（**GPL-2.0**） | [eshaz/wasm-audio-decoders](https://github.com/eshaz/wasm-audio-decoders) → npm `@wasm-audio-decoders/aac@0.0.1` |
 
 ## lamejs
 
@@ -32,6 +33,21 @@
   作为兜底解码路径；正常路径不加载其 wasm 实例
 - **注意**：该文件包含一段经编码的内联 WebAssembly 体积（MP3 解码内核），
   这是其体积来源；构建时校验其不含 `<script` 序列以安全内联
+
+## aac-decoder（faad2）
+
+- **文件**：`src/vendor/aac-decoder.min.js`（取自 npm 包 `@wasm-audio-decoders/aac@0.0.1`
+  的 `dist/aac-decoder.min.js`，UMD 构建，内含 yEnc 编码的 wasm）
+- **上游仓库**：https://github.com/eshaz/wasm-audio-decoders（`src/aac`）
+- **许可**：包裹层为 MIT（Copyright 2026 Ethan Halsall）；**解码内核 faad2 为 GPL-2.0**
+- **用途**：安卓平台的 `decodeAudioData` 解 AAC 会随机丢帧（实测 54.36s 只解出 50.15s
+  且不报错）。平台解码结果比媒体元素元数据时长短 3% 以上时，改用本解码器
+  （MP4 解封装由 `audio-core.js` 的 `mp4ExtractAac` 完成，传入 ASC + 裸 AAC 帧）
+- **⚠️ 许可注意**：faad2 为 GPL-2.0，**与 MIT 不同且具有传染性**。内联本解码器后，
+  分发本应用（含单文件 HTML）时需向接收方提供对应源码获取方式（上游仓库与版本
+  即可满足），且对该组件的许可义务按 GPL-2.0 执行。闭源分发前请咨询律师。
+- **注意**：该文件包含一段经编码的内联 WebAssembly 体积（AAC 解码内核），
+  这是其体积来源（约 232 KB）；构建时校验其不含 `<script` 序列以安全内联
 
 ## 应用图标
 

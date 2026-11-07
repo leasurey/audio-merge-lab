@@ -30,10 +30,16 @@ let html = read('index.template.html');
 const mp3decSrc = read('src/vendor/mpg123-decoder.min.js');
 const mp3decB64 = Buffer.from(mp3decSrc, 'utf8').toString('base64');
 
+/* AAC WASM 解码器（faad2）：安卓平台 AAC 解码器（MediaCodec）会随机丢帧
+ * （实测 54.36s 只解出 50.15s 且不报错），WASM 解码全平台一致。 */
+const aacdecSrc = read('src/vendor/aac-decoder.min.js');
+const aacdecB64 = Buffer.from(aacdecSrc, 'utf8').toString('base64');
+
 const inject = [
   ['/*GUARD*/', read('src/boot-guard.js')],
   ['/*VENDOR*/', read('src/vendor/lame.min.js')],
   ['/*MP3DEC*/', 'window.__MP3DEC_B64 = "' + mp3decB64 + '";'],
+  ['/*AACDEC*/', 'window.__AACDEC_B64 = "' + aacdecB64 + '";'],
   ['/*STYLES*/', read('src/styles.css')],
   ['/*CORE*/', read('src/audio-core.js')],
   ['/*APP*/', read('src/app.js')]
@@ -58,6 +64,7 @@ const inlinedSources = [
   'src/boot-guard.js',
   'src/vendor/lame.min.js',
   'src/vendor/mpg123-decoder.min.js',
+  'src/vendor/aac-decoder.min.js',
   'src/audio-core.js',
   'src/app.js',
   'src/styles.css'

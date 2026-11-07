@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.5.1';
+  var APP_VERSION = '0.5.2';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -1036,6 +1036,226 @@
     return 1;
   }
 
+  /**
+   * MP4/M4A 解封装：提取 AAC 帧序列与 AudioSpecificConfig。
+   *
+   * 用途：部分安卓内核的 decodeAudioData 解 AAC 会随机丢帧（实测 54.36s 只解出
+   * 50.15s，且不报错）。WASM 解码器（faad2）需要裸 AAC 帧 + ASC，本函数从
+   * MP4/M4A 的 moov 样本表（stsd/stsz/stsc/stco/co64）中取出这些数据。
+   *
+   * 纯函数，只读输入字节；单音频轨（hdlr 'soun'）；stsd 条目须为 'mp4a'。
+   * @param {Uint8Array} bytes 完整文件字节
+   * @returns {{asc:Uint8Array, frames:Uint8Array[], sampleRate:number,
+   *            channels:number, samplesPerFrame:number}|null} null = 结构不支持
+   */
+  function mp4ExtractAac(bytes) {
+    if (!bytes || bytes.length < 32) return null;
+
+    function u32(off) {
+      return ((bytes[off] << 24) | (bytes[off + 1] << 16) |
+        (bytes[off + 2] << 8) | bytes[off + 3]) >>> 0;
+    }
+    function u16(off) { return (bytes[off] << 8) | bytes[off + 1]; }
+    function u64(off) { return u32(off) * 4294967296 + u32(off + 4); }
+    function tag(off, len) {
+      var s = '';
+      for (var i = 0; i < len && off + i < bytes.length; i++) {
+        s += String.fromCharCode(bytes[off + i]);
+      }
+      return s;
+    }
+
+    // 递归展开容器 box（只展开已知容器，避免把 mdat 也遍历进来）
+    var CONTAINERS = { moov: 1, trak: 1, mdia: 1, minf: 1, stbl: 1 };
+    var all = [];
+    (function walk(start, end, depth) {
+      if (depth > 6) return;
+      var p = start;
+      while (p + 8 <= end) {
+        var size = u32(p);
+        var type = tag(p + 4, 4);
+        var hdr = 8;
+        if (size === 1) { size = u64(p + 8); hdr = 16; }
+        else if (size === 0) { size = end - p; }
+        if (size < hdr || p + size > end) break;
+        all.push({ type: type, start: p, end: p + size, hdr: hdr });
+        if (CONTAINERS[type]) walk(p + hdr, p + size, depth + 1);
+        p += size;
+      }
+    })(0, bytes.length, 0);
+
+    // 找音频轨（其 trak 子树内有 hdlr 'soun'），并取它的 stbl
+    function inRange(box, start, end) {
+      return box.start >= start && box.end <= end;
+    }
+    var stbl = null;
+    for (var t = 0; t < all.length && !stbl; t++) {
+      var tk = all[t];
+      if (tk.type !== 'trak') continue;
+      var hasSound = false;
+      for (var h = 0; h < all.length; h++) {
+        var hb = all[h];
+        if (hb.type === 'hdlr' && inRange(hb, tk.start, tk.end)) {
+          // hdlr body: fullbox(4) + preDefined(4) + handlerType(4)
+          if (tag(hb.start + hb.hdr + 8, 4) === 'soun') hasSound = true;
+          break;
+        }
+      }
+      if (!hasSound) continue;
+      for (var s = 0; s < all.length; s++) {
+        var sb = all[s];
+        if (sb.type === 'stbl' && inRange(sb, tk.start, tk.end)) { stbl = sb; break; }
+      }
+    }
+    if (!stbl) return null;
+
+    function childrenOf(box) {
+      var list = [];
+      var p = box.start + box.hdr;
+      var end = box.end;
+      while (p + 8 <= end) {
+        var size = u32(p);
+        var type = tag(p + 4, 4);
+        var hdr = 8;
+        if (size === 1) { size = u64(p + 8); hdr = 16; }
+        else if (size === 0) { size = end - p; }
+        if (size < hdr || p + size > end) break;
+        list.push({ type: type, start: p, end: p + size, hdr: hdr });
+        p += size;
+      }
+      return list;
+    }
+
+    var stblChildren = childrenOf(stbl);
+    function findIn(list, type) {
+      for (var i = 0; i < list.length; i++) if (list[i].type === type) return list[i];
+      return null;
+    }
+
+    var stsd = findIn(stblChildren, 'stsd');
+    var stsz = findIn(stblChildren, 'stsz');
+    var stsc = findIn(stblChildren, 'stsc');
+    var stco = findIn(stblChildren, 'stco');
+    var co64 = findIn(stblChildren, 'co64');
+    if (!stsd || !stsz || !stsc || (!stco && !co64)) return null;
+
+    // stsd → mp4a 条目 → 采样率/声道 + esds → AudioSpecificConfig
+    var stsdBody = stsd.start + stsd.hdr;
+    var entryCount = u32(stsdBody + 4);
+    if (entryCount < 1) return null;
+    var e = stsdBody + 8; // 第一个 entry：size(4) + format(4)
+    var eSize = u32(e);
+    if (tag(e + 4, 4) !== 'mp4a') return null; // 只支持 AAC（mp4a）
+    var channels = u16(e + 24);
+    var sampleRate = (u32(e + 32) >>> 16); // 16.16 定点，先取后用无符号右移
+
+    // esds → ES_Descriptor → DecoderConfigDescriptor → AudioSpecificConfig（tag 5）
+    var asc = null;
+    var esds = null;
+    var childStart = e + 36;
+    for (var k = childStart; k < e + eSize - 8; k++) {
+      if (tag(k, 4) === 'esds') { esds = { start: k }; break; }
+    }
+    if (esds) {
+      // esds.start 存的是 type 字段命中位置；描述符从
+      // size(4)+type(4)+fullbox(4) 之后开始，即 type + 8
+      var p2 = esds.start + 8; // ES_DescrTag 位置
+      function descLen(pos) {
+        var v = 0, n = 0;
+        while (n < 4 && pos < bytes.length) {
+          var b = bytes[pos];
+          v = (v << 7) | (b & 0x7f);
+          n++;
+          if (!(b & 0x80)) break;
+        }
+        return { len: v, next: pos + n };
+      }
+      if (bytes[p2] === 3) { // ES_DescrTag
+        var l1 = descLen(p2 + 1);
+        var q = l1.next;
+        q += 3; // ES_ID(2) + flags(1)
+        if (bytes[q - 1] & 0x80) q += 2;          // dependsOn_ES_ID
+        if (bytes[q - 1] & 0x40) q += 1 + bytes[q]; // URL
+        if (bytes[q - 1] & 0x20) q += 2;          // OCR_ES_Id
+        if (bytes[q] === 4) { // DecoderConfigDescrTag
+          var l2 = descLen(q + 1);
+          var r = l2.next + 13; // objType(1)+bufSize(3)+maxBR(4)+avgBR(4)
+          if (bytes[r] === 5) { // DecSpecificInfoTag
+            var l3 = descLen(r + 1);
+            if (l3.len > 0 && r + 2 + l3.len <= bytes.length) {
+              asc = bytes.slice(r + 2, r + 2 + l3.len);
+            }
+          }
+        }
+      }
+    }
+    if (!asc || asc.length < 2) return null;
+
+    // stsz → 每帧大小
+    var szBody = stsz.start + stsz.hdr;
+    var fixedSize = u32(szBody + 4);
+    var frameCount = u32(szBody + 8);
+    if (!frameCount) return null;
+
+    // stsc → 每块帧数；stco/co64 → 块偏移
+    function fullEntries(box, itemSize) {
+      var body = box.start + box.hdr;
+      var cnt = u32(body + 4);
+      var list = [];
+      for (var i = 0; i < cnt; i++) {
+        if (itemSize === 12) list.push(u32(body + 8 + i * 12));
+        else list.push(u64(body + 8 + i * 8));
+      }
+      return list;
+    }
+    var stscBody = stsc.start + stsc.hdr;
+    var scCount = u32(stscBody + 4);
+    var scFirst = [], scPer = [];
+    for (var m = 0; m < scCount; m++) {
+      scFirst.push(u32(stscBody + 8 + m * 12));       // 1-based 起始块号
+      scPer.push(u32(stscBody + 12 + m * 12));        // 每块帧数
+    }
+    var chunkOffsets = fullEntries(stco || co64, stco ? 4 : 8);
+    if (!chunkOffsets.length) return null;
+
+    function chunkOffset(zeroBased) {
+      return stco ? u32(stco.start + stco.hdr + 8 + zeroBased * 4)
+        : u64(co64.start + co64.hdr + 8 + zeroBased * 8);
+    }
+
+    // 逐帧映射绝对偏移
+    var frames = [];
+    var sampleIdx = 0;
+    var scIdx = 0;
+    var chunkIdx = scFirst[0] - 1; // 0-based
+    var left = scPer[0];
+    var pos = chunkOffset(chunkIdx);
+    for (var fi = 0; fi < frameCount; fi++) {
+      var fsize = fixedSize > 0 ? fixedSize : u32(szBody + 12 + fi * 4);
+      if (pos + fsize > bytes.length) return null;
+      frames.push(bytes.subarray(pos, pos + fsize));
+      pos += fsize;
+      sampleIdx += 1;
+      left--;
+      if (left === 0 && fi < frameCount - 1) {
+        chunkIdx++;
+        if (scIdx + 1 < scCount && chunkIdx + 1 >= scFirst[scIdx + 1] - 1) scIdx++;
+        pos = chunkOffset(chunkIdx);
+        left = scPer[scIdx];
+      }
+    }
+
+    return {
+      asc: asc,
+      frames: frames,
+      sampleRate: sampleRate,
+      channels: channels,
+      // AAC-LC 每帧 1024 个样本；其他 profile 少见，按 ASC 粗略给出
+      samplesPerFrame: 1024,
+      sampleCount: sampleIdx
+    };
+  }
+
   return {
     APP_VERSION: APP_VERSION,
     DEFAULTS: DEFAULTS,
@@ -1059,6 +1279,7 @@
     segmentPeakAfterFade: segmentPeakAfterFade,
     planMerge: planMerge,
     sniffFormat: sniffFormat,
+    mp4ExtractAac: mp4ExtractAac,
     decodeWav: decodeWav,
     floatToInt16: floatToInt16,
     pcmToInt16Channels: pcmToInt16Channels,
