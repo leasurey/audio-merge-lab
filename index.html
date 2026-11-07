@@ -996,7 +996,7 @@ SOFTWARE.
           <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
           <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
         </div>
-        <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,.mp3,.m4a,.aac,.wav,.webm,.ogg,.flac" multiple>
+        <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,video/mp4,video/quicktime,video/x-m4v,.mp3,.m4a,.mp4,.mov,.m4v,.aac,.wav,.webm,.ogg,.flac" multiple>
         <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
              会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
         <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
@@ -1005,7 +1005,7 @@ SOFTWARE.
           <span class="rec-dot" id="recordDot" hidden></span>
           <span id="recordTime"></span>
         </div>
-        <p class="hint">支持多选：mp3 / m4a / wav / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
+        <p class="hint">支持多选：mp3 / m4a / wav / mp4 / mov / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
       </div>
     </section>
 
@@ -1473,7 +1473,7 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.5.2';
+  var APP_VERSION = '0.5.3';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -2251,10 +2251,15 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
     }
     if (bytes.length >= 8 && ascii(4, 4) === 'ftyp') {
       var brand = ascii(8, 4).replace(/[^\x20-\x7e]/g, '');
+      var isQt = brand === 'qt  ' || brand === 'qt';
       return {
         container: 'mp4', codec: 'aac',
-        label: 'M4A/MP4 容器（' + (brand || '未知品牌') + '，音频通常为 AAC）',
-        advice: '桌面版 Chrome/Edge 不解码 AAC；手机上如仍失败，请转为 MP3 或 WAV'
+        label: isQt
+          ? 'MOV（QuickTime 录屏/视频，音频通常为 AAC）'
+          : 'M4A/MP4 容器（' + (brand || '未知品牌') + '，音频通常为 AAC）',
+        advice: isQt
+          ? '录屏文件的音频轨会被单独提取；若仍失败可在「格式转换」页处理'
+          : '若手机上也失败，可在「格式转换」页转为 MP3 或 WAV'
       };
     }
     if (bytes.length >= 4 && ascii(0, 4) === 'OggS') {
@@ -2702,6 +2707,279 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
     };
   }
 
+  /**
+   * 读取 MP4/MOV 中音频轨自身声明的时长（秒）。
+   *
+   * 为什么需要它：`<audio>` 元素对 mov/mp4 返回的 duration 是**整个媒体**的时长，
+   * 由最长的轨（通常是视频）主导。用它当"解码是否丢帧"的基准时，视频比音频长多少
+   * 就会被误判成丢帧多少，进而错误地校正采样率——听感上就是整段变调。
+   * iOS 录屏（mov）正好是这种结构：视频轨常比音频轨长（开头/结尾无声）。
+   * 这里直接读音频轨 mdhd 的 timescale + duration，得到与视频无关的精确值。
+   *
+   * @param {Uint8Array} bytes
+   * @returns {?number} 秒；无音频轨或结构不支持时 null
+   */
+  function mp4AudioTrackDuration(bytes) {
+    if (!bytes || bytes.length < 32) return null;
+    function u32(off) {
+      return ((bytes[off] << 24) | (bytes[off + 1] << 16) |
+        (bytes[off + 2] << 8) | bytes[off + 3]) >>> 0;
+    }
+    function u64(off) { return u32(off) * 4294967296 + u32(off + 4); }
+    function tag(off, len) {
+      var s = '';
+      for (var i = 0; i < len && off + i < bytes.length; i++) {
+        s += String.fromCharCode(bytes[off + i]);
+      }
+      return s;
+    }
+    var CONTAINERS = { moov: 1, trak: 1, mdia: 1, minf: 1, stbl: 1 };
+    var all = [];
+    (function walk(start, end, depth) {
+      if (depth > 6) return;
+      var p = start;
+      while (p + 8 <= end) {
+        var size = u32(p);
+        var type = tag(p + 4, 4);
+        var hdr = 8;
+        if (size === 1) { size = u64(p + 8); hdr = 16; }
+        else if (size === 0) { size = end - p; }
+        if (size < hdr || p + size > end) break;
+        all.push({ type: type, start: p, end: p + size, hdr: hdr });
+        if (CONTAINERS[type]) walk(p + hdr, p + size, depth + 1);
+        p += size;
+      }
+    })(0, bytes.length, 0);
+
+    function inRange(box, s, e) { return box.start >= s && box.end <= e; }
+    for (var t = 0; t < all.length; t++) {
+      var tk = all[t];
+      if (tk.type !== 'trak') continue;
+      var isSound = false;
+      for (var h = 0; h < all.length; h++) {
+        var hb = all[h];
+        if (hb.type === 'hdlr' && inRange(hb, tk.start, tk.end)) {
+          if (tag(hb.start + hb.hdr + 8, 4) === 'soun') isSound = true;
+          break;
+        }
+      }
+      if (!isSound) continue;
+      for (var m = 0; m < all.length; m++) {
+        var mb = all[m];
+        if (mb.type !== 'mdhd' || !inRange(mb, tk.start, tk.end)) continue;
+        var body = mb.start + mb.hdr;
+        var version = bytes[body];
+        var timescale, duration;
+        if (version === 1) {
+          timescale = u32(body + 20); // fullbox(4)+creation(8)+modification(8)
+          duration = u64(body + 24);
+        } else {
+          timescale = u32(body + 12); // fullbox(4)+creation(4)+modification(4)
+          duration = u32(body + 16);
+        }
+        if (!timescale) return null;
+        var sec = duration / timescale;
+        return isFinite(sec) && sec > 0 ? sec : null;
+      }
+    }
+    return null;
+  }
+
+  /* ── 容器内的 MPEG 音频切片提取 ────────────────────────────────────────────   *
+   * 有一类文件把 MP3 数据装在了「声明不一致」的容器里，容器头与实际编码对不上：
+   *   · MP3-in-WAV：RIFF/WAVE 容器，fmt 为 WAVE_FORMAT_MPEGLAYER3(0x0055)，
+   *     data 块里是 MPEG 帧而不是 PCM；
+   *   · MP4 容器 + MPEG audio 音轨（esds objType 0x6B/0x69），"视频转音频"类
+   *     工具常见，此时 stsd 里没有 AudioSpecificConfig，AAC 解析器无从下手；
+   *   · 扩展名/容器被改过（.mp4、.wav 里实际是 MP3 帧）。
+   *
+   * 这些文件走容器解析必然失败：WAV 分支按 PCM 解会得到满幅噪声（因此 decodeWav
+   * 显式拒绝压缩格式），MP4 分支拿不到 ASC。但音频数据本身是完全合法的 MPEG 帧，
+   * 把帧序列提取出来交给 mpg123 就能正常解码——等价于"自动选中内部那段 MP3 切片"。
+   *
+   * 选用字节级帧扫描而不是按容器 demux 的原因：它同时覆盖上述三种情况且不依赖
+   * 容器结构完整（moov 损坏、改过扩展名都能救），代码量与失败面都更小。
+   *
+   * 误检控制：
+   *   · 帧头 layer 位必须非 0 —— ADTS AAC 的 layer 恒为 0，天然排除，不会把 AAC
+   *     裸流误当成 MP3；
+   *   · bitrate index 限 1..14（0=free、15=非法），sampleRate index 限 0..2；
+   *   · 段起点要求连续 N 帧（默认 3）参数一致且帧长对齐，偶发同步字无法成段。
+   */
+  var MPEG_BITRATES = {
+    3: { // MPEG1
+      1: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+      2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+      3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
+    },
+    2: { // MPEG2 与 MPEG2.5 共用
+      1: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+      2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+      3: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
+    }
+  };
+  var MPEG_SAMPLE_RATES = {
+    3: [44100, 48000, 32000], // MPEG1
+    2: [22050, 24000, 16000], // MPEG2
+    0: [11025, 12000, 8000]   // MPEG2.5
+  };
+
+  /** 解析 off 处的 MPEG 音频帧头；不合法返回 null。 */
+  function mpegFrameInfo(bytes, off) {
+    if (off + 4 > bytes.length) return null;
+    if (bytes[off] !== 0xFF || (bytes[off + 1] & 0xE0) !== 0xE0) return null;
+    var b1 = bytes[off + 1];
+    var verBits = (b1 >> 3) & 3;      // 3=MPEG1, 2=MPEG2, 0=MPEG2.5, 1=保留
+    if (verBits === 1) return null;
+    var layerBits = (b1 >> 1) & 3;    // 3=I, 2=II, 1=III, 0=保留（ADTS AAC 落在 0）
+    if (layerBits === 0) return null;
+    var layer = layerBits === 3 ? 1 : (layerBits === 2 ? 2 : 3); // 归一化为 1/2/3
+    var b2 = bytes[off + 2];
+    var brIdx = (b2 >> 4) & 0xF;
+    if (brIdx === 0 || brIdx === 15) return null;
+    var srIdx = (b2 >> 2) & 3;
+    if (srIdx === 3) return null;
+    var pad = (b2 >> 1) & 1;
+    var mode = (bytes[off + 3] >> 6) & 3; // 3 = 单声道
+
+    var rates = MPEG_SAMPLE_RATES[verBits];
+    var kbpsTable = MPEG_BITRATES[verBits === 3 ? 3 : 2][layer];
+    if (!rates || !kbpsTable) return null;
+    var rate = rates[srIdx];
+    var kbps = kbpsTable[brIdx];
+    if (!rate || !kbps) return null;
+
+    var frameLen;
+    if (layer === 1) {                                   // Layer I：按 4 字节槽对齐
+      frameLen = Math.floor(12 * kbps * 1000 / rate + pad) * 4;
+    } else if (layer === 3 && verBits !== 3) {           // MPEG2/2.5 Layer III
+      frameLen = Math.floor(72 * kbps * 1000 / rate) + pad;
+    } else {                                             // Layer II / MPEG1 Layer III
+      frameLen = Math.floor(144 * kbps * 1000 / rate) + pad;
+    }
+    if (frameLen < 24) return null;
+    var samplesPerFrame = layer === 1 ? 384 : (layer === 3 && verBits !== 3 ? 576 : 1152);
+
+    return {
+      version: verBits, layer: layer, sampleRate: rate, kbps: kbps,
+      channels: mode === 3 ? 1 : 2,
+      frameLen: frameLen, samplesPerFrame: samplesPerFrame,
+      end: off + frameLen
+    };
+  }
+
+  /**
+   * 在任意字节流中提取 MPEG 音频帧，按原始顺序拼成可直接解码的裸流。
+   * 多段（容器里音频与视频/其他数据交错存放）会全部收集后拼接。
+   * @param {Uint8Array} bytes
+   * @param {{minFrames?:number}} [opts]
+   * @returns {?{data:Uint8Array, frames:number, segments:number, sampleRate:number,
+   *            channels:number, layer:number, version:number, startOffset:number,
+   *            durationSec:number}} null = 未找到可用的帧序列
+   */
+  function mp3ExtractStream(bytes, opts) {
+    if (!bytes || bytes.length < 128) return null;
+    var minFrames = (opts && opts.minFrames) || 3;
+    var limit = bytes.length;
+
+    // 从 off 起连续 need 帧是否同参数且帧长自洽（排除偶发同步字）
+    var chainOk = function (off, need) {
+      var first = mpegFrameInfo(bytes, off);
+      if (!first) return null;
+      var p = off;
+      for (var i = 0; i < need; i++) {
+        var f = i === 0 ? first : mpegFrameInfo(bytes, p);
+        if (!f || f.end > limit) return null;
+        if (f.version !== first.version || f.layer !== first.layer ||
+            f.sampleRate !== first.sampleRate) return null;
+        p = f.end;
+      }
+      return first;
+    };
+
+    var segs = [];
+    var cur = null;
+    var pos = 0;
+    while (pos + 4 <= limit) {
+      // 绝大多数字节不会以 0xFF 开头，快速跳过
+      if (bytes[pos] !== 0xFF || (bytes[pos + 1] & 0xE0) !== 0xE0) {
+        if (cur) { segs.push(cur); cur = null; }
+        pos++;
+        continue;
+      }
+      var info = mpegFrameInfo(bytes, pos);
+      if (!info) {
+        if (cur) { segs.push(cur); cur = null; }
+        pos++;
+        continue;
+      }
+      // 当前段的顺延：必须紧邻上一帧且参数一致
+      if (cur && pos === cur.end && info.end <= limit &&
+          info.version === cur.version && info.layer === cur.layer &&
+          info.sampleRate === cur.sampleRate) {
+        cur.end = info.end;
+        cur.frames++;
+        pos = info.end;
+        continue;
+      }
+      // 新段起点：需连续 minFrames 帧确认
+      if (info.end <= limit && chainOk(pos, minFrames)) {
+        if (cur) segs.push(cur);
+        cur = {
+          start: pos, end: info.end, frames: 1,
+          version: info.version, layer: info.layer,
+          sampleRate: info.sampleRate, channels: info.channels,
+          samplesPerFrame: info.samplesPerFrame
+        };
+        pos = info.end;
+        continue;
+      }
+      if (cur) { segs.push(cur); cur = null; }
+      pos++;
+    }
+    if (cur) segs.push(cur);
+
+    // 只保留成段的、且与「帧数最多的那段」参数一致的片段（避免混入不同采样率）
+    var best = null;
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i].frames >= minFrames && (!best || segs[i].frames > best.frames)) best = segs[i];
+    }
+    if (!best) return null;
+
+    var keep = [];
+    var totalFrames = 0;
+    var totalBytes = 0;
+    for (var j = 0; j < segs.length; j++) {
+      var s = segs[j];
+      if (s.frames < minFrames) continue;
+      if (s.version !== best.version || s.layer !== best.layer ||
+          s.sampleRate !== best.sampleRate) continue;
+      keep.push(s);
+      totalFrames += s.frames;
+      totalBytes += s.end - s.start;
+    }
+    if (!totalFrames || !totalBytes) return null;
+
+    var out = new Uint8Array(totalBytes);
+    var w = 0;
+    for (var k = 0; k < keep.length; k++) {
+      out.set(bytes.subarray(keep[k].start, keep[k].end), w);
+      w += keep[k].end - keep[k].start;
+    }
+
+    return {
+      data: out,
+      frames: totalFrames,
+      segments: keep.length,
+      sampleRate: best.sampleRate,
+      channels: best.channels,
+      layer: best.layer,
+      version: best.version,
+      startOffset: keep[0].start,
+      durationSec: totalFrames * best.samplesPerFrame / best.sampleRate
+    };
+  }
+
   return {
     APP_VERSION: APP_VERSION,
     DEFAULTS: DEFAULTS,
@@ -2726,6 +3004,8 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
     planMerge: planMerge,
     sniffFormat: sniffFormat,
     mp4ExtractAac: mp4ExtractAac,
+    mp4AudioTrackDuration: mp4AudioTrackDuration,
+    mp3ExtractStream: mp3ExtractStream,
     decodeWav: decodeWav,
     floatToInt16: floatToInt16,
     pcmToInt16Channels: pcmToInt16Channels,
@@ -2983,6 +3263,7 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
       silent: s.silent,
       per: s.per,
       fix: seg.decodeFixNote || null,
+      embed: seg.embedNote || null,
       attempts: seg.decodeAttempts || null
     });
   }
@@ -3031,6 +3312,7 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
         L.push('    解码尝试: ' + d.attempts.join('s, ') + 's（取最长 ' + d.frames / d.rate + 's）');
       }
       if (d.fix) L.push('    ★ 速度校正: ' + d.fix);
+      if (d.embed) L.push('    ★ 容器内切片: ' + d.embed);
     }
 
     ensureDiagEls();
@@ -3585,6 +3867,46 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
     };
   }
 
+  /** 用内置 mpg123 解码一段裸 MPEG 流（来源可能是容器内提取出的 MP3 切片） */
+  async function decodeMpegStream(bytes) {
+    var dec = await getMp3Decoder();
+    var out = await dec.decode(bytes);
+    if (!out || !out.samplesDecoded || !out.channelData || !out.channelData.length) {
+      throw new Error('内置 MP3 解码器未产出音频数据');
+    }
+    // mpg123 会把单声道上混为双声道；channelData 是每次 decode 新分配的
+    // Float32Array（非 wasm 堆视图），可直接作为 PCM 声道持有
+    return {
+      pcm: { sampleRate: out.sampleRate, channels: out.channelData },
+      decoder: 'mpg123'
+    };
+  }
+
+  /**
+   * 兜底：在容器字节流里提取内部的 MPEG 音频帧并解码。
+   *
+   * 用于「容器声明与实际编码不一致」的文件——MP3-in-WAV（fmt 0x0055）、
+   * MP4 容器里的 MPEG audio 音轨、扩展名被改过的 MP3 等。这类文件平台解码器
+   * 与容器解析器都会失败，但音频数据本身是合法的 MPEG 帧。
+   * V0.4.0 及更早版本没有内置解析器，mp4/wav 全靠平台解码，某些环境能直接解开；
+   * 现在补上这条显式通道，不再依赖平台解码器的宽容度。
+   *
+   * @returns {Promise<?{pcm:Object, decoder:string, embedded:Object}>} null = 没有可提取的帧
+   */
+  async function extractEmbeddedMp3(bytes) {
+    var ex = null;
+    try {
+      ex = AudioCore.mp3ExtractStream(bytes);
+    } catch (e) {
+      return null; // 提取本身出错一律视为"没有"，不吞掉原始错误语义
+    }
+    if (!ex) return null;
+    var res = await decodeMpegStream(ex.data);
+    res.decoder = 'mpg123-embedded';
+    res.embedded = ex;
+    return res;
+  }
+
   /**
    * 兜底解码：按嗅探到的实际格式选择内置解析器。
    * @param {Uint8Array} bytes 文件字节
@@ -3593,27 +3915,35 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
    */
   async function fallbackDecode(bytes, info) {
     if (info.container === 'wav') {
-      return { pcm: AudioCore.decodeWav(bytes), decoder: 'wav' };
+      try {
+        return { pcm: AudioCore.decodeWav(bytes), decoder: 'wav' };
+      } catch (eWav) {
+        // MP3-in-WAV：data 块里是 MPEG 帧，按 PCM 解析只会得到满幅噪声，因此
+        // decodeWav 对压缩格式显式报错。此时改走帧提取，而不是把文件判死。
+        var embWav = await extractEmbeddedMp3(bytes);
+        if (embWav) return embWav;
+        throw eWav;
+      }
     }
     if (info.container === 'mp3') {
-      var dec = await getMp3Decoder();
-      var out = await dec.decode(bytes);
-      if (!out || !out.samplesDecoded || !out.channelData || !out.channelData.length) {
-        throw new Error('内置 MP3 解码器未产出音频数据');
-      }
-      // mpg123 会把单声道上混为双声道；channelData 是每次 decode 新分配的
-      // Float32Array（非 wasm 堆视图），可直接作为 PCM 声道持有
-      return {
-        pcm: { sampleRate: out.sampleRate, channels: out.channelData },
-        decoder: 'mpg123'
-      };
+      return await decodeMpegStream(bytes);
     }
     // MP4/M4A（AAC）与 ADTS 裸流：安卓平台 AAC 解码器会随机丢帧，
     // 失败或丢帧时改用内置 faad2（WASM）解码
     if (info.container === 'mp4' || info.container === 'aac-adts') {
-      return await fallbackDecodeAac(bytes, info.container);
+      var r = await fallbackDecodeAac(bytes, info.container);
+      if (r) return r;
+      // 不是 AAC 音轨（MP4 + MPEG audio）或 stsd/esds 结构与预期不符：
+      // 退回帧级提取，把容器里的 MP3 切片捞出来
+      return await extractEmbeddedMp3(bytes);
     }
-    return null;
+    // 未知容器：平台解码器已经拒绝，最后再试一次帧提取，
+    // 能救回扩展名/容器头损坏但音频数据完好的文件
+    try {
+      return await extractEmbeddedMp3(bytes);
+    } catch (eUnk) {
+      return null;
+    }
   }
 
   async function decodeSegment(seg) {
@@ -3643,16 +3973,63 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
        * ⚠️ decodeAudioData 每次都会 detach 输入，重试前必须重新读文件。 */
       var trueDur = seg.expectDuration > 0 ? seg.expectDuration : null;
       if (!trueDur) {
-        var mediaDur0 = await probeMediaDuration(seg.blob);
-        if (mediaDur0 && isFinite(mediaDur0) && mediaDur0 > 0) trueDur = mediaDur0;
+        /* MP4/MOV：优先用音频轨 mdhd 的时长，而不是 <audio> 的媒体总时长。
+         * mov 的媒体时长由最长的轨（通常是视频）主导，iOS 录屏尤其明显——
+         * 视频往往比音频长。拿媒体时长当「解码是否丢帧」的基准，会把视频多出的
+         * 那几秒误判成丢帧，进而按比例校正采样率，听感就是整段变调。
+         * 此刻 buf 尚未被 decodeAudioData detach，可直接在其上建视图读取。 */
+        var sniffDur = AudioCore.sniffFormat(headBytes);
+        if (sniffDur.container === 'mp4') {
+          try {
+            var trackDur = AudioCore.mp4AudioTrackDuration(new Uint8Array(buf));
+            if (trackDur && isFinite(trackDur) && trackDur > 0) trueDur = trackDur;
+          } catch (eDur) { /* 结构不支持 → 回退到媒体时长 */ }
+        }
+        if (!trueDur) {
+          var mediaDur0 = await probeMediaDuration(seg.blob);
+          if (mediaDur0 && isFinite(mediaDur0) && mediaDur0 > 0) trueDur = mediaDur0;
+        }
       }
       var closeEnough = function (d) {
         return !trueDur || Math.abs(d - trueDur) / trueDur < 0.02;
       };
       var MAX_ATTEMPTS = trueDur ? 4 : 1;
 
+      /* MP4 / MOV：优先走内置解封装 + faad2，而不是先交给平台解码器。
+       * 理由：安卓 MediaCodec 解 AAC 会丢帧、出毛刺（V0.5.2 的根因）；而基于时长的
+       * 校验只能识别"变短"，识别不了"时长正常但内容有毛刺"。直接走内置路径，三个
+       * 平台行为一致、结果可预测，也才真正做到"导入即提取内部音轨"。
+       * 解封装/解码失败、或解出的时长明显短于基准时，仍回退到平台解码器。 */
+      var preFb = null;
+      var sniffPre = AudioCore.sniffFormat(headBytes);
+      if (sniffPre.container === 'mp4') {
+        try {
+          preFb = await fallbackDecodeAac(new Uint8Array(buf), 'mp4');
+        } catch (ePre) {
+          preFb = null;
+        }
+        if (!preFb) {
+          // 音轨不是 AAC（MP4 + MPEG audio），或 fMP4/异常结构没有 stbl：
+          // 接着试帧级切片提取，仍失败才交回平台解码器
+          try {
+            preFb = await extractEmbeddedMp3(new Uint8Array(buf));
+          } catch (ePre2) {
+            preFb = null;
+          }
+        }
+        // 解码期间该片段可能已被移除
+        if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+        if (preFb && trueDur) {
+          var preSec = AudioCore.pcmDurationSec(preFb.pcm);
+          if (!(preSec > 0) || preSec < trueDur * 0.97) {
+            // 内置解封装得到的时长明显偏短 → 结构可能不被支持，交回平台解码器
+            preFb = null;
+          }
+        }
+      }
+
       var best = null;
-      for (var att = 0; att < MAX_ATTEMPTS; att++) {
+      for (var att = 0; !preFb && att < MAX_ATTEMPTS; att++) {
         if (att > 0) setStatus('平台解码疑似丢帧，正在重试（' + (att + 1) + '/' + MAX_ATTEMPTS + '）…');
         var ab = att === 0 ? buf : await readAsArrayBuffer(seg.blob);
         var one = null;
@@ -3782,11 +4159,15 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
       // 被 detach，任何基于它的视图长度都会变成 0。
       var info = AudioCore.sniffFormat(headBytes);
       seg.sniff = info;
-      var fb = null, fbErr = null;
+      var fb = preFb, fbErr = null;   // 内置优先路径已解好则直接复用，不重复解码
       try {
-        if (info.container === 'wav' || info.container === 'mp3' ||
-            info.container === 'mp4' || info.container === 'aac-adts') {
-          // 内置解析器需要完整文件；平台那一份已被 detach，这里按需重读
+        if (!fb) {
+          /* 不按容器白名单过滤：所有格式都交给兜底链，由它决定能否处理。
+           * 旧实现只把 wav/mp3/mp4/aac-adts 送进兜底链，其余（ogg、flac、m4b 等）
+           * 直接判死——但"容器声明与实际编码不符"的文件恰恰常落在这类容器里
+           * （Ogg 头包着 MP3 数据、扩展名被改过）。切片提取是纯帧级判断，
+           * 与应用层认不认识这个容器无关，因此不该被白名单挡住。
+           * 确实不支持的格式仍返回 null，错误信息与原来一致。 */
           var fullBuf = await readAsArrayBuffer(seg.blob);
           fb = await fallbackDecode(new Uint8Array(fullBuf), info);
         }
@@ -3812,6 +4193,12 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
         seg.duration = AudioCore.pcmDurationSec(fb.pcm);
         seg.sampleRate = fb.pcm.sampleRate;
         seg.channels = fb.pcm.channels.length;
+        // 容器声明与实际编码不符时，记录提取到的切片规模，供诊断面板与提示使用
+        if (fb.embedded) {
+          seg.embedNote = '容器内 MP3 帧 ' + fb.embedded.frames + ' 帧 / ' +
+            fb.embedded.segments + ' 段（起始偏移 ' + fb.embedded.startOffset +
+            '，' + fb.embedded.sampleRate + 'Hz）';
+        }
         diagSeg(seg, '内置 ' + (fb.decoder || '?'));
         seg.decoding = false;
         seg.usedFallback = true;
@@ -3822,10 +4209,19 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
           ? '平台解码结果为 0 帧，内容由内置解码器还原，请试听确认后再合并'
           : null);
         var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG'
-          : fb.decoder === 'wasm-faad2' ? 'AAC' : 'WAV');
+          : fb.decoder === 'wasm-faad2' ? 'AAC'
+          : fb.decoder === 'mpg123-embedded' ? '容器内 MP3 切片' : 'WAV');
         if (seg.removed) return;
         renderList();
-        if (platformSuspicious) {
+        if (fb.embedded) {
+          reportDecodeStatus(seg, '「' + seg.name + '」容器与内部编码不一致（识别为 ' +
+            (info.label || '未知容器') + '，内部含 MP3 数据），已自动提取 ' +
+            fb.embedded.frames + ' 帧解码完成：' + fmtTime(seg.duration) +
+            '，合计 ' + fmtTime(totalDuration()));
+        } else if (preFb) {
+          reportDecodeStatus(seg, '「' + seg.name + '」已用内置解码器（' + label +
+            '）提取内部音轨：' + fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
+        } else if (platformSuspicious) {
           reportDecodeStatus(seg, '「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
             '）解出 ' + fmtTime(seg.duration) +
             '，请试听确认内容是否完整，若不满意可删除该片段');
