@@ -2624,8 +2624,12 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
      * 标准路径失败后再在 esds 范围内扫一次 tag=5 的描述符兜底。 */
     function descLen(pos) {
       var v = 0, n = 0;
-      while (n < 4 && pos < bytes.length) {
-        var bb = bytes[pos];
+      /* ⚠️ 必须随字节数递增读 pos + n。旧实现写的是 bytes[pos]，多字节长度
+       * （Apple 工具常见的 80 80 80 XX 最长编码）会把同一个 0x80 读四遍，
+       * 解出 length=0 → 描述符被判定越界 → ASC 提取失败。
+       * 单字节长度的文件不受影响，所以此前用自造样本一直测不出来。 */
+      while (n < 4 && pos + n < bytes.length) {
+        var bb = bytes[pos + n];
         v = (v << 7) | (bb & 0x7f);
         n++;
         if (!(bb & 0x80)) break;
@@ -2730,7 +2734,12 @@ window.__AACDEC_B64 = "LyogQ29weXJpZ2h0IDIwMjYgRXRoYW4gSGFsc2FsbC4gVGhpcyBmaWxlI
       left--;
       if (left === 0 && fi < frameCount - 1) {
         chunkIdx++;
-        if (scIdx + 1 < scCount && chunkIdx + 1 >= scFirst[scIdx + 1] - 1) scIdx++;
+        /* stsc 的 first_chunk 是 1-based 的"起始块号"。
+         * 当前块的 1-based 号 = chunkIdx + 1，必须与 scFirst 直接比较；
+         * 旧实现写成 `chunkIdx + 1 >= scFirst - 1`（多减了 1），只有单条目 stsc 时
+         * 才碰巧正确，遇到多条目（真实录屏/相机文件常见，实测 85 条）会提前切换，
+         * 每块样本数取错 → 偏移逐步错位 → 尾部帧越界。 */
+        if (scIdx + 1 < scCount && chunkIdx + 1 >= scFirst[scIdx + 1]) scIdx++;
         pos = chunkOffset(chunkIdx);
         left = scPer[scIdx];
       }
