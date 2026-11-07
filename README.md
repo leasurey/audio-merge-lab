@@ -115,6 +115,8 @@ node tools/serve.js            # 默认 8010 端口，占用时：--port 8020
                                   → MPEG？内置 mpg123（WASM，78KB，惰性加载）
                                   → MP4/AAC？内置 faad2（WASM，232KB，惰性加载）
                                     （安卓解码丢帧时也会自动改用）
+                                  → 容器内是 MPEG 帧？提取切片交给内置 mpg123
+                                    （MP3-in-WAV、MP4+MPEG 音轨、改过扩展名的文件）
                                   → 其他格式？精确报出检测结果 + 转换建议
 ```
 

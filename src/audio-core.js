@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.5.2';
+  var APP_VERSION = '0.5.3';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -1256,6 +1256,202 @@
     };
   }
 
+  /* ── 容器内的 MPEG 音频切片提取 ────────────────────────────────────────────
+   *
+   * 有一类文件把 MP3 数据装在了「声明不一致」的容器里，容器头与实际编码对不上：
+   *   · MP3-in-WAV：RIFF/WAVE 容器，fmt 为 WAVE_FORMAT_MPEGLAYER3(0x0055)，
+   *     data 块里是 MPEG 帧而不是 PCM；
+   *   · MP4 容器 + MPEG audio 音轨（esds objType 0x6B/0x69），"视频转音频"类
+   *     工具常见，此时 stsd 里没有 AudioSpecificConfig，AAC 解析器无从下手；
+   *   · 扩展名/容器被改过（.mp4、.wav 里实际是 MP3 帧）。
+   *
+   * 这些文件走容器解析必然失败：WAV 分支按 PCM 解会得到满幅噪声（因此 decodeWav
+   * 显式拒绝压缩格式），MP4 分支拿不到 ASC。但音频数据本身是完全合法的 MPEG 帧，
+   * 把帧序列提取出来交给 mpg123 就能正常解码——等价于"自动选中内部那段 MP3 切片"。
+   *
+   * 选用字节级帧扫描而不是按容器 demux 的原因：它同时覆盖上述三种情况且不依赖
+   * 容器结构完整（moov 损坏、改过扩展名都能救），代码量与失败面都更小。
+   *
+   * 误检控制：
+   *   · 帧头 layer 位必须非 0 —— ADTS AAC 的 layer 恒为 0，天然排除，不会把 AAC
+   *     裸流误当成 MP3；
+   *   · bitrate index 限 1..14（0=free、15=非法），sampleRate index 限 0..2；
+   *   · 段起点要求连续 N 帧（默认 3）参数一致且帧长对齐，偶发同步字无法成段。
+   */
+  var MPEG_BITRATES = {
+    3: { // MPEG1
+      1: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+      2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+      3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
+    },
+    2: { // MPEG2 与 MPEG2.5 共用
+      1: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+      2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+      3: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
+    }
+  };
+  var MPEG_SAMPLE_RATES = {
+    3: [44100, 48000, 32000], // MPEG1
+    2: [22050, 24000, 16000], // MPEG2
+    0: [11025, 12000, 8000]   // MPEG2.5
+  };
+
+  /** 解析 off 处的 MPEG 音频帧头；不合法返回 null。 */
+  function mpegFrameInfo(bytes, off) {
+    if (off + 4 > bytes.length) return null;
+    if (bytes[off] !== 0xFF || (bytes[off + 1] & 0xE0) !== 0xE0) return null;
+    var b1 = bytes[off + 1];
+    var verBits = (b1 >> 3) & 3;      // 3=MPEG1, 2=MPEG2, 0=MPEG2.5, 1=保留
+    if (verBits === 1) return null;
+    var layerBits = (b1 >> 1) & 3;    // 3=I, 2=II, 1=III, 0=保留（ADTS AAC 落在 0）
+    if (layerBits === 0) return null;
+    var layer = layerBits === 3 ? 1 : (layerBits === 2 ? 2 : 3); // 归一化为 1/2/3
+    var b2 = bytes[off + 2];
+    var brIdx = (b2 >> 4) & 0xF;
+    if (brIdx === 0 || brIdx === 15) return null;
+    var srIdx = (b2 >> 2) & 3;
+    if (srIdx === 3) return null;
+    var pad = (b2 >> 1) & 1;
+    var mode = (bytes[off + 3] >> 6) & 3; // 3 = 单声道
+
+    var rates = MPEG_SAMPLE_RATES[verBits];
+    var kbpsTable = MPEG_BITRATES[verBits === 3 ? 3 : 2][layer];
+    if (!rates || !kbpsTable) return null;
+    var rate = rates[srIdx];
+    var kbps = kbpsTable[brIdx];
+    if (!rate || !kbps) return null;
+
+    var frameLen;
+    if (layer === 1) {                                   // Layer I：按 4 字节槽对齐
+      frameLen = Math.floor(12 * kbps * 1000 / rate + pad) * 4;
+    } else if (layer === 3 && verBits !== 3) {           // MPEG2/2.5 Layer III
+      frameLen = Math.floor(72 * kbps * 1000 / rate) + pad;
+    } else {                                             // Layer II / MPEG1 Layer III
+      frameLen = Math.floor(144 * kbps * 1000 / rate) + pad;
+    }
+    if (frameLen < 24) return null;
+    var samplesPerFrame = layer === 1 ? 384 : (layer === 3 && verBits !== 3 ? 576 : 1152);
+
+    return {
+      version: verBits, layer: layer, sampleRate: rate, kbps: kbps,
+      channels: mode === 3 ? 1 : 2,
+      frameLen: frameLen, samplesPerFrame: samplesPerFrame,
+      end: off + frameLen
+    };
+  }
+
+  /**
+   * 在任意字节流中提取 MPEG 音频帧，按原始顺序拼成可直接解码的裸流。
+   * 多段（容器里音频与视频/其他数据交错存放）会全部收集后拼接。
+   * @param {Uint8Array} bytes
+   * @param {{minFrames?:number}} [opts]
+   * @returns {?{data:Uint8Array, frames:number, segments:number, sampleRate:number,
+   *            channels:number, layer:number, version:number, startOffset:number,
+   *            durationSec:number}} null = 未找到可用的帧序列
+   */
+  function mp3ExtractStream(bytes, opts) {
+    if (!bytes || bytes.length < 128) return null;
+    var minFrames = (opts && opts.minFrames) || 3;
+    var limit = bytes.length;
+
+    // 从 off 起连续 need 帧是否同参数且帧长自洽（排除偶发同步字）
+    var chainOk = function (off, need) {
+      var first = mpegFrameInfo(bytes, off);
+      if (!first) return null;
+      var p = off;
+      for (var i = 0; i < need; i++) {
+        var f = i === 0 ? first : mpegFrameInfo(bytes, p);
+        if (!f || f.end > limit) return null;
+        if (f.version !== first.version || f.layer !== first.layer ||
+            f.sampleRate !== first.sampleRate) return null;
+        p = f.end;
+      }
+      return first;
+    };
+
+    var segs = [];
+    var cur = null;
+    var pos = 0;
+    while (pos + 4 <= limit) {
+      // 绝大多数字节不会以 0xFF 开头，快速跳过
+      if (bytes[pos] !== 0xFF || (bytes[pos + 1] & 0xE0) !== 0xE0) {
+        if (cur) { segs.push(cur); cur = null; }
+        pos++;
+        continue;
+      }
+      var info = mpegFrameInfo(bytes, pos);
+      if (!info) {
+        if (cur) { segs.push(cur); cur = null; }
+        pos++;
+        continue;
+      }
+      // 当前段的顺延：必须紧邻上一帧且参数一致
+      if (cur && pos === cur.end && info.end <= limit &&
+          info.version === cur.version && info.layer === cur.layer &&
+          info.sampleRate === cur.sampleRate) {
+        cur.end = info.end;
+        cur.frames++;
+        pos = info.end;
+        continue;
+      }
+      // 新段起点：需连续 minFrames 帧确认
+      if (info.end <= limit && chainOk(pos, minFrames)) {
+        if (cur) segs.push(cur);
+        cur = {
+          start: pos, end: info.end, frames: 1,
+          version: info.version, layer: info.layer,
+          sampleRate: info.sampleRate, channels: info.channels,
+          samplesPerFrame: info.samplesPerFrame
+        };
+        pos = info.end;
+        continue;
+      }
+      if (cur) { segs.push(cur); cur = null; }
+      pos++;
+    }
+    if (cur) segs.push(cur);
+
+    // 只保留成段的、且与「帧数最多的那段」参数一致的片段（避免混入不同采样率）
+    var best = null;
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i].frames >= minFrames && (!best || segs[i].frames > best.frames)) best = segs[i];
+    }
+    if (!best) return null;
+
+    var keep = [];
+    var totalFrames = 0;
+    var totalBytes = 0;
+    for (var j = 0; j < segs.length; j++) {
+      var s = segs[j];
+      if (s.frames < minFrames) continue;
+      if (s.version !== best.version || s.layer !== best.layer ||
+          s.sampleRate !== best.sampleRate) continue;
+      keep.push(s);
+      totalFrames += s.frames;
+      totalBytes += s.end - s.start;
+    }
+    if (!totalFrames || !totalBytes) return null;
+
+    var out = new Uint8Array(totalBytes);
+    var w = 0;
+    for (var k = 0; k < keep.length; k++) {
+      out.set(bytes.subarray(keep[k].start, keep[k].end), w);
+      w += keep[k].end - keep[k].start;
+    }
+
+    return {
+      data: out,
+      frames: totalFrames,
+      segments: keep.length,
+      sampleRate: best.sampleRate,
+      channels: best.channels,
+      layer: best.layer,
+      version: best.version,
+      startOffset: keep[0].start,
+      durationSec: totalFrames * best.samplesPerFrame / best.sampleRate
+    };
+  }
+
   return {
     APP_VERSION: APP_VERSION,
     DEFAULTS: DEFAULTS,
@@ -1280,6 +1476,7 @@
     planMerge: planMerge,
     sniffFormat: sniffFormat,
     mp4ExtractAac: mp4ExtractAac,
+    mp3ExtractStream: mp3ExtractStream,
     decodeWav: decodeWav,
     floatToInt16: floatToInt16,
     pcmToInt16Channels: pcmToInt16Channels,

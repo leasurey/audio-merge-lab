@@ -225,4 +225,35 @@ test('OPFS 同步写入必须处理部分写入（否则安卓上数据整体错
   assert.ok(app.includes("if (!n || n <= 0)"), '写入 0 字节必须报错，不能静默丢数据');
 });
 
+test('容器声明与内部编码不符时，自动提取内部 MP3 切片（V0.5.3）', () => {
+  const core = read('src/audio-core.js');
+  assert.ok(core.includes('function mp3ExtractStream'), '核心层缺少 MPEG 帧提取函数');
+  assert.ok(core.includes('mp3ExtractStream: mp3ExtractStream'), '帧提取函数必须导出');
+  assert.ok(app.includes('async function extractEmbeddedMp3'), '应用层缺少切片提取通道');
+  assert.ok(app.includes('async function decodeMpegStream'), '应用层缺少裸流解码入口');
+
+  // WAV 分支：decodeWav 拒绝压缩格式后必须回退到帧提取，而不是把文件判死
+  const wavSrc = app.slice(
+    app.indexOf("if (info.container === 'wav') {"),
+    app.indexOf("if (info.container === 'mp3') {")
+  );
+  assert.ok(wavSrc.includes('catch (eWav)'), 'WAV 分支缺少异常回退');
+  assert.ok(wavSrc.includes('extractEmbeddedMp3'), 'MP3-in-WAV 必须回退到帧提取');
+
+  // MP4 分支：拿不到 AudioSpecificConfig 后必须回退（MP4 + MPEG audio 音轨）
+  const mp4Src = app.slice(
+    app.indexOf("if (info.container === 'mp4' || info.container === 'aac-adts') {"),
+    app.indexOf('// 未知容器')
+  );
+  assert.ok(mp4Src.includes('extractEmbeddedMp3'), 'MP4 分支缺少 MPEG 音轨回退');
+
+  // 降级链不得按容器白名单过滤：Ogg/FLAC 等容器里装 MP3 的情况同样要能救回
+  assert.ok(!app.includes("info.container === 'wav' || info.container === 'mp3' ||"),
+    '兜底链不得用容器白名单挡住切片提取');
+
+  // 用户可见文案与诊断可观测性
+  assert.ok(app.includes('容器内 MP3 切片'), '缺少切片解码的来源标签');
+  assert.ok(app.includes('★ 容器内切片'), '诊断面板缺少切片信息行');
+});
+
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

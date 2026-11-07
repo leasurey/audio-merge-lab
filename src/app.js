@@ -246,6 +246,7 @@
       silent: s.silent,
       per: s.per,
       fix: seg.decodeFixNote || null,
+      embed: seg.embedNote || null,
       attempts: seg.decodeAttempts || null
     });
   }
@@ -294,6 +295,7 @@
         L.push('    解码尝试: ' + d.attempts.join('s, ') + 's（取最长 ' + d.frames / d.rate + 's）');
       }
       if (d.fix) L.push('    ★ 速度校正: ' + d.fix);
+      if (d.embed) L.push('    ★ 容器内切片: ' + d.embed);
     }
 
     ensureDiagEls();
@@ -848,6 +850,46 @@
     };
   }
 
+  /** 用内置 mpg123 解码一段裸 MPEG 流（来源可能是容器内提取出的 MP3 切片） */
+  async function decodeMpegStream(bytes) {
+    var dec = await getMp3Decoder();
+    var out = await dec.decode(bytes);
+    if (!out || !out.samplesDecoded || !out.channelData || !out.channelData.length) {
+      throw new Error('内置 MP3 解码器未产出音频数据');
+    }
+    // mpg123 会把单声道上混为双声道；channelData 是每次 decode 新分配的
+    // Float32Array（非 wasm 堆视图），可直接作为 PCM 声道持有
+    return {
+      pcm: { sampleRate: out.sampleRate, channels: out.channelData },
+      decoder: 'mpg123'
+    };
+  }
+
+  /**
+   * 兜底：在容器字节流里提取内部的 MPEG 音频帧并解码。
+   *
+   * 用于「容器声明与实际编码不一致」的文件——MP3-in-WAV（fmt 0x0055）、
+   * MP4 容器里的 MPEG audio 音轨、扩展名被改过的 MP3 等。这类文件平台解码器
+   * 与容器解析器都会失败，但音频数据本身是合法的 MPEG 帧。
+   * V0.4.0 及更早版本没有内置解析器，mp4/wav 全靠平台解码，某些环境能直接解开；
+   * 现在补上这条显式通道，不再依赖平台解码器的宽容度。
+   *
+   * @returns {Promise<?{pcm:Object, decoder:string, embedded:Object}>} null = 没有可提取的帧
+   */
+  async function extractEmbeddedMp3(bytes) {
+    var ex = null;
+    try {
+      ex = AudioCore.mp3ExtractStream(bytes);
+    } catch (e) {
+      return null; // 提取本身出错一律视为"没有"，不吞掉原始错误语义
+    }
+    if (!ex) return null;
+    var res = await decodeMpegStream(ex.data);
+    res.decoder = 'mpg123-embedded';
+    res.embedded = ex;
+    return res;
+  }
+
   /**
    * 兜底解码：按嗅探到的实际格式选择内置解析器。
    * @param {Uint8Array} bytes 文件字节
@@ -856,27 +898,35 @@
    */
   async function fallbackDecode(bytes, info) {
     if (info.container === 'wav') {
-      return { pcm: AudioCore.decodeWav(bytes), decoder: 'wav' };
+      try {
+        return { pcm: AudioCore.decodeWav(bytes), decoder: 'wav' };
+      } catch (eWav) {
+        // MP3-in-WAV：data 块里是 MPEG 帧，按 PCM 解析只会得到满幅噪声，因此
+        // decodeWav 对压缩格式显式报错。此时改走帧提取，而不是把文件判死。
+        var embWav = await extractEmbeddedMp3(bytes);
+        if (embWav) return embWav;
+        throw eWav;
+      }
     }
     if (info.container === 'mp3') {
-      var dec = await getMp3Decoder();
-      var out = await dec.decode(bytes);
-      if (!out || !out.samplesDecoded || !out.channelData || !out.channelData.length) {
-        throw new Error('内置 MP3 解码器未产出音频数据');
-      }
-      // mpg123 会把单声道上混为双声道；channelData 是每次 decode 新分配的
-      // Float32Array（非 wasm 堆视图），可直接作为 PCM 声道持有
-      return {
-        pcm: { sampleRate: out.sampleRate, channels: out.channelData },
-        decoder: 'mpg123'
-      };
+      return await decodeMpegStream(bytes);
     }
     // MP4/M4A（AAC）与 ADTS 裸流：安卓平台 AAC 解码器会随机丢帧，
     // 失败或丢帧时改用内置 faad2（WASM）解码
     if (info.container === 'mp4' || info.container === 'aac-adts') {
-      return await fallbackDecodeAac(bytes, info.container);
+      var r = await fallbackDecodeAac(bytes, info.container);
+      if (r) return r;
+      // 不是 AAC 音轨（MP4 + MPEG audio）或 stsd/esds 结构与预期不符：
+      // 退回帧级提取，把容器里的 MP3 切片捞出来
+      return await extractEmbeddedMp3(bytes);
     }
-    return null;
+    // 未知容器：平台解码器已经拒绝，最后再试一次帧提取，
+    // 能救回扩展名/容器头损坏但音频数据完好的文件
+    try {
+      return await extractEmbeddedMp3(bytes);
+    } catch (eUnk) {
+      return null;
+    }
   }
 
   async function decodeSegment(seg) {
@@ -1047,12 +1097,14 @@
       seg.sniff = info;
       var fb = null, fbErr = null;
       try {
-        if (info.container === 'wav' || info.container === 'mp3' ||
-            info.container === 'mp4' || info.container === 'aac-adts') {
-          // 内置解析器需要完整文件；平台那一份已被 detach，这里按需重读
-          var fullBuf = await readAsArrayBuffer(seg.blob);
-          fb = await fallbackDecode(new Uint8Array(fullBuf), info);
-        }
+        /* 不按容器白名单过滤：所有格式都交给兜底链，由它决定能否处理。
+         * 旧实现只把 wav/mp3/mp4/aac-adts 送进兜底链，其余（ogg、flac、m4b 等）
+         * 直接判死——但"容器声明与实际编码不符"的文件恰恰常落在这类容器里
+         * （Ogg 头包着 MP3 数据、扩展名被改过）。切片提取是纯帧级判断，
+         * 与应用层认不认识这个容器无关，因此不该被白名单挡住。
+         * 确实不支持的格式仍返回 null，错误信息与原来一致。 */
+        var fullBuf = await readAsArrayBuffer(seg.blob);
+        fb = await fallbackDecode(new Uint8Array(fullBuf), info);
       } catch (e2) {
         fbErr = e2;
       }
@@ -1075,6 +1127,12 @@
         seg.duration = AudioCore.pcmDurationSec(fb.pcm);
         seg.sampleRate = fb.pcm.sampleRate;
         seg.channels = fb.pcm.channels.length;
+        // 容器声明与实际编码不符时，记录提取到的切片规模，供诊断面板与提示使用
+        if (fb.embedded) {
+          seg.embedNote = '容器内 MP3 帧 ' + fb.embedded.frames + ' 帧 / ' +
+            fb.embedded.segments + ' 段（起始偏移 ' + fb.embedded.startOffset +
+            '，' + fb.embedded.sampleRate + 'Hz）';
+        }
         diagSeg(seg, '内置 ' + (fb.decoder || '?'));
         seg.decoding = false;
         seg.usedFallback = true;
@@ -1085,10 +1143,16 @@
           ? '平台解码结果为 0 帧，内容由内置解码器还原，请试听确认后再合并'
           : null);
         var label = (fb.decoder === 'mpg123' ? 'MP3/MPEG'
-          : fb.decoder === 'wasm-faad2' ? 'AAC' : 'WAV');
+          : fb.decoder === 'wasm-faad2' ? 'AAC'
+          : fb.decoder === 'mpg123-embedded' ? '容器内 MP3 切片' : 'WAV');
         if (seg.removed) return;
         renderList();
-        if (platformSuspicious) {
+        if (fb.embedded) {
+          reportDecodeStatus(seg, '「' + seg.name + '」容器与内部编码不一致（识别为 ' +
+            (info.label || '未知容器') + '，内部含 MP3 数据），已自动提取 ' +
+            fb.embedded.frames + ' 帧解码完成：' + fmtTime(seg.duration) +
+            '，合计 ' + fmtTime(totalDuration()));
+        } else if (platformSuspicious) {
           reportDecodeStatus(seg, '「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
             '）解出 ' + fmtTime(seg.duration) +
             '，请试听确认内容是否完整，若不满意可删除该片段');

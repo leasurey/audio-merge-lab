@@ -1044,4 +1044,79 @@ test('createSegmentConverter: 解码器吐出 NaN / Infinity 时不得污染成�
   assert.ok(Math.abs(out[0] - 0.5 * 0x7fff) <= 1, '正常样本不得被改动');
 });
 
+/* ---------- 容器内 MPEG 音频切片提取（V0.5.3） ---------- */
+
+// 构造一个合法的 MPEG1 Layer III 帧头（128kbps / 44.1kHz / 立体声 → 帧长 417 或 418）
+function mpegFrame(fill, size) {
+  const b = new Uint8Array(size);
+  b[0] = 0xFF; b[1] = 0xFB;  // sync + MPEG1 + Layer III
+  b[2] = 0x90;               // bitrate 128k、采样率 44.1k、无填充
+  b[3] = 0x64;               // 立体声
+  for (let i = 4; i < size; i++) b[i] = fill & 0xff;
+  return b;
+}
+function mpegSequence(n, fill) {
+  const parts = [];
+  for (let i = 0; i < n; i++) parts.push(mpegFrame(fill + i, 417));
+  const out = new Uint8Array(parts.length * 417);
+  let p = 0;
+  for (const x of parts) { out.set(x, p); p += x.length; }
+  return out;
+}
+
+test('mp3ExtractStream: 前导非音频数据可跳过，取到完整帧序列', () => {
+  const junk = new Uint8Array(1000);
+  for (let i = 0; i < junk.length; i++) junk[i] = i & 0xff;
+  const frames = mpegSequence(10, 0x10);
+  const buf = new Uint8Array(junk.length + frames.length);
+  buf.set(junk, 0); buf.set(frames, junk.length);
+
+  const ex = Core.mp3ExtractStream(buf);
+  assert.ok(ex, '应提取到帧');
+  assert.strictEqual(ex.frames, 10);
+  assert.strictEqual(ex.startOffset, 1000);
+  assert.strictEqual(ex.sampleRate, 44100);
+  assert.deepStrictEqual(Array.from(ex.data), Array.from(frames), '提取结果必须逐字节一致');
+});
+
+test('mp3ExtractStream: 多段交错时按原序拼接，不丢帧', () => {
+  const a = mpegSequence(5, 0x20);
+  const b = mpegSequence(4, 0x30);
+  const gap = new Uint8Array(2048).fill(0x5a); // 模拟容器里的视频/元数据
+  const buf = new Uint8Array(a.length * 2 + b.length + gap.length * 2);
+  let p = 0;
+  buf.set(a, p); p += a.length;
+  buf.set(gap, p); p += gap.length;
+  buf.set(b, p); p += b.length;
+  buf.set(gap, p);
+
+  const ex = Core.mp3ExtractStream(buf);
+  assert.ok(ex);
+  assert.strictEqual(ex.frames, 9);
+  assert.strictEqual(ex.segments, 2);
+  const expect = new Uint8Array(a.length + b.length);
+  expect.set(a, 0); expect.set(b, a.length);
+  assert.deepStrictEqual(Array.from(ex.data), Array.from(expect), '两段必须按原序拼接');
+});
+
+test('mp3ExtractStream: 拒绝 ADTS AAC 同步字（layer=0），不误判为 MP3', () => {
+  const adts = new Uint8Array(4096);
+  for (let i = 0; i < adts.length; i += 400) { adts[i] = 0xFF; adts[i + 1] = 0xF1; }
+  assert.strictEqual(Core.mp3ExtractStream(adts), null);
+});
+
+test('mp3ExtractStream: 少于 3 帧的孤立同步字不成段', () => {
+  const few = mpegSequence(2, 0x40);
+  const buf = new Uint8Array(2000 + few.length);
+  buf.set(new Uint8Array(2000).fill(0x00), 0);
+  buf.set(few, 2000);
+  assert.strictEqual(Core.mp3ExtractStream(buf), null, '2 帧不足以确认，应判为未找到');
+});
+
+test('mp3ExtractStream: 全零/过短数据返回 null 而非抛错', () => {
+  assert.strictEqual(Core.mp3ExtractStream(new Uint8Array(1 << 16)), null);
+  assert.strictEqual(Core.mp3ExtractStream(new Uint8Array(10)), null);
+  assert.strictEqual(Core.mp3ExtractStream(null), null);
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');
