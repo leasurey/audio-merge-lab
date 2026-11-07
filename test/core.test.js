@@ -1119,4 +1119,44 @@ test('mp3ExtractStream: 全零/过短数据返回 null 而非抛错', () => {
   assert.strictEqual(Core.mp3ExtractStream(null), null);
 });
 
+/* ---------- MOV / MP4 音频轨时长（V0.5.3） ---------- */
+test('mp4AudioTrackDuration: 取音频轨 mdhd，不受视频轨时长影响', () => {
+  const B = (type, ...parts) => {
+    const body = Buffer.concat(parts);
+    const b = Buffer.alloc(8 + body.length);
+    b.writeUInt32BE(8 + body.length, 0);
+    b.write(type, 4, 'latin1');
+    body.copy(b, 8);
+    return b;
+  };
+  const u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0, 0); return b; };
+  const u16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16BE(v & 0xffff, 0); return b; };
+  const mdhd = (ts, dur) => B('mdhd', Buffer.alloc(4), u32(0), u32(0), u32(ts), u32(dur), u16(0x55c4), u16(0));
+  const hdlr = (kind) => B('hdlr', Buffer.alloc(4), u32(0), Buffer.from(kind, 'latin1'), Buffer.alloc(12));
+  const trak = (kind, md) => B('trak', B('mdia', md, hdlr(kind)));
+
+  // 视频轨 87 秒、音频轨 54 秒：必须返回音频轨的 54
+  const moov = B('moov',
+    trak('vide', mdhd(600, 87 * 600)),
+    trak('soun', mdhd(48000, 54 * 48000)));
+  const bytes = new Uint8Array(moov);
+  assert.strictEqual(Core.mp4AudioTrackDuration(bytes), 54, '必须取音频轨时长，不能被视频轨带偏');
+
+  // 只有视频轨 → null（不能拿视频时长冒充音频）
+  const videoOnly = new Uint8Array(B('moov', trak('vide', mdhd(600, 8700))));
+  assert.strictEqual(Core.mp4AudioTrackDuration(videoOnly), null);
+  assert.strictEqual(Core.mp4AudioTrackDuration(new Uint8Array(10)), null);
+});
+
+test('sniffFormat: QuickTime brand 标注为 MOV', () => {
+  const bytes = new Uint8Array(32);
+  const put = (s, o) => { for (let i = 0; i < s.length; i++) bytes[o + i] = s.charCodeAt(i); };
+  bytes[3] = 24;
+  put('ftyp', 4);
+  put('qt  ', 8);
+  const info = Core.sniffFormat(bytes);
+  assert.strictEqual(info.container, 'mp4', 'MOV 与 MP4 共用解封装路径');
+  assert.ok(/MOV/.test(info.label), 'MOV 应显式出现在格式标签里');
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

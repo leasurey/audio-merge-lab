@@ -256,4 +256,18 @@ test('容器声明与内部编码不符时，自动提取内部 MP3 切片（V0.
   assert.ok(app.includes('★ 容器内切片'), '诊断面板缺少切片信息行');
 });
 
+test('导入控件覆盖 mov/mp4，解码基准优先取音频轨时长（V0.5.3）', () => {
+  const tpl = read('index.template.html');
+  const accept = (tpl.match(/id="fileInput"[^>]*accept="([^"]*)"/) || [])[1] || '';
+  assert.ok(accept.includes('.mov'), 'accept 必须包含 .mov（iOS 录屏文件）');
+  assert.ok(accept.includes('.mp4'), 'accept 必须包含 .mp4');
+  assert.ok(accept.includes('.m4v'), 'accept 必须包含 .m4v');
+  // mov 的 MIME 是 video/quicktime，只有 audio/* 匹配不到，部分系统选择器会过滤掉
+  assert.ok(accept.includes('video/quicktime'), 'accept 必须包含 video/quicktime');
+  assert.ok(accept.includes('video/mp4'), 'accept 必须包含 video/mp4');
+
+  assert.ok(app.includes('mp4AudioTrackDuration'), '解码基准应优先使用音频轨时长');
+  assert.ok(app.includes("sniffDur.container === 'mp4'"), '仅对 mp4/mov 容器使用该基准');
+});
+
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

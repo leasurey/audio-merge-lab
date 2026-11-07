@@ -956,8 +956,22 @@
        * ⚠️ decodeAudioData 每次都会 detach 输入，重试前必须重新读文件。 */
       var trueDur = seg.expectDuration > 0 ? seg.expectDuration : null;
       if (!trueDur) {
-        var mediaDur0 = await probeMediaDuration(seg.blob);
-        if (mediaDur0 && isFinite(mediaDur0) && mediaDur0 > 0) trueDur = mediaDur0;
+        /* MP4/MOV：优先用音频轨 mdhd 的时长，而不是 <audio> 的媒体总时长。
+         * mov 的媒体时长由最长的轨（通常是视频）主导，iOS 录屏尤其明显——
+         * 视频往往比音频长。拿媒体时长当「解码是否丢帧」的基准，会把视频多出的
+         * 那几秒误判成丢帧，进而按比例校正采样率，听感就是整段变调。
+         * 此刻 buf 尚未被 decodeAudioData detach，可直接在其上建视图读取。 */
+        var sniffDur = AudioCore.sniffFormat(headBytes);
+        if (sniffDur.container === 'mp4') {
+          try {
+            var trackDur = AudioCore.mp4AudioTrackDuration(new Uint8Array(buf));
+            if (trackDur && isFinite(trackDur) && trackDur > 0) trueDur = trackDur;
+          } catch (eDur) { /* 结构不支持 → 回退到媒体时长 */ }
+        }
+        if (!trueDur) {
+          var mediaDur0 = await probeMediaDuration(seg.blob);
+          if (mediaDur0 && isFinite(mediaDur0) && mediaDur0 > 0) trueDur = mediaDur0;
+        }
       }
       var closeEnough = function (d) {
         return !trueDur || Math.abs(d - trueDur) / trueDur < 0.02;

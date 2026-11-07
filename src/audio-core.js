@@ -805,10 +805,15 @@
     }
     if (bytes.length >= 8 && ascii(4, 4) === 'ftyp') {
       var brand = ascii(8, 4).replace(/[^\x20-\x7e]/g, '');
+      var isQt = brand === 'qt  ' || brand === 'qt';
       return {
         container: 'mp4', codec: 'aac',
-        label: 'M4A/MP4 容器（' + (brand || '未知品牌') + '，音频通常为 AAC）',
-        advice: '桌面版 Chrome/Edge 不解码 AAC；手机上如仍失败，请转为 MP3 或 WAV'
+        label: isQt
+          ? 'MOV（QuickTime 录屏/视频，音频通常为 AAC）'
+          : 'M4A/MP4 容器（' + (brand || '未知品牌') + '，音频通常为 AAC）',
+        advice: isQt
+          ? '录屏文件的音频轨会被单独提取；若仍失败可在「格式转换」页处理'
+          : '若手机上也失败，可在「格式转换」页转为 MP3 或 WAV'
       };
     }
     if (bytes.length >= 4 && ascii(0, 4) === 'OggS') {
@@ -1256,8 +1261,85 @@
     };
   }
 
-  /* ── 容器内的 MPEG 音频切片提取 ────────────────────────────────────────────
+  /**
+   * 读取 MP4/MOV 中音频轨自身声明的时长（秒）。
    *
+   * 为什么需要它：`<audio>` 元素对 mov/mp4 返回的 duration 是**整个媒体**的时长，
+   * 由最长的轨（通常是视频）主导。用它当"解码是否丢帧"的基准时，视频比音频长多少
+   * 就会被误判成丢帧多少，进而错误地校正采样率——听感上就是整段变调。
+   * iOS 录屏（mov）正好是这种结构：视频轨常比音频轨长（开头/结尾无声）。
+   * 这里直接读音频轨 mdhd 的 timescale + duration，得到与视频无关的精确值。
+   *
+   * @param {Uint8Array} bytes
+   * @returns {?number} 秒；无音频轨或结构不支持时 null
+   */
+  function mp4AudioTrackDuration(bytes) {
+    if (!bytes || bytes.length < 32) return null;
+    function u32(off) {
+      return ((bytes[off] << 24) | (bytes[off + 1] << 16) |
+        (bytes[off + 2] << 8) | bytes[off + 3]) >>> 0;
+    }
+    function u64(off) { return u32(off) * 4294967296 + u32(off + 4); }
+    function tag(off, len) {
+      var s = '';
+      for (var i = 0; i < len && off + i < bytes.length; i++) {
+        s += String.fromCharCode(bytes[off + i]);
+      }
+      return s;
+    }
+    var CONTAINERS = { moov: 1, trak: 1, mdia: 1, minf: 1, stbl: 1 };
+    var all = [];
+    (function walk(start, end, depth) {
+      if (depth > 6) return;
+      var p = start;
+      while (p + 8 <= end) {
+        var size = u32(p);
+        var type = tag(p + 4, 4);
+        var hdr = 8;
+        if (size === 1) { size = u64(p + 8); hdr = 16; }
+        else if (size === 0) { size = end - p; }
+        if (size < hdr || p + size > end) break;
+        all.push({ type: type, start: p, end: p + size, hdr: hdr });
+        if (CONTAINERS[type]) walk(p + hdr, p + size, depth + 1);
+        p += size;
+      }
+    })(0, bytes.length, 0);
+
+    function inRange(box, s, e) { return box.start >= s && box.end <= e; }
+    for (var t = 0; t < all.length; t++) {
+      var tk = all[t];
+      if (tk.type !== 'trak') continue;
+      var isSound = false;
+      for (var h = 0; h < all.length; h++) {
+        var hb = all[h];
+        if (hb.type === 'hdlr' && inRange(hb, tk.start, tk.end)) {
+          if (tag(hb.start + hb.hdr + 8, 4) === 'soun') isSound = true;
+          break;
+        }
+      }
+      if (!isSound) continue;
+      for (var m = 0; m < all.length; m++) {
+        var mb = all[m];
+        if (mb.type !== 'mdhd' || !inRange(mb, tk.start, tk.end)) continue;
+        var body = mb.start + mb.hdr;
+        var version = bytes[body];
+        var timescale, duration;
+        if (version === 1) {
+          timescale = u32(body + 20); // fullbox(4)+creation(8)+modification(8)
+          duration = u64(body + 24);
+        } else {
+          timescale = u32(body + 12); // fullbox(4)+creation(4)+modification(4)
+          duration = u32(body + 16);
+        }
+        if (!timescale) return null;
+        var sec = duration / timescale;
+        return isFinite(sec) && sec > 0 ? sec : null;
+      }
+    }
+    return null;
+  }
+
+  /* ── 容器内的 MPEG 音频切片提取 ────────────────────────────────────────────   *
    * 有一类文件把 MP3 数据装在了「声明不一致」的容器里，容器头与实际编码对不上：
    *   · MP3-in-WAV：RIFF/WAVE 容器，fmt 为 WAVE_FORMAT_MPEGLAYER3(0x0055)，
    *     data 块里是 MPEG 帧而不是 PCM；
@@ -1476,6 +1558,7 @@
     planMerge: planMerge,
     sniffFormat: sniffFormat,
     mp4ExtractAac: mp4ExtractAac,
+    mp4AudioTrackDuration: mp4AudioTrackDuration,
     mp3ExtractStream: mp3ExtractStream,
     decodeWav: decodeWav,
     floatToInt16: floatToInt16,

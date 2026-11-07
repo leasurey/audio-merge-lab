@@ -57,7 +57,7 @@
           <label class="btn primary btn-lg" id="btnImport" for="fileInput">＋ 导入音频文件</label>
           <button class="btn ghost btn-lg" id="btnRecord" type="button">开始录音</button>
         </div>
-        <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,video/mp4,.mp3,.m4a,.mp4,.aac,.wav,.webm,.ogg,.flac" multiple>
+        <input type="file" id="fileInput" class="file-input-hidden" accept="audio/*,video/mp4,video/quicktime,video/x-m4v,.mp3,.m4a,.mp4,.mov,.m4v,.aac,.wav,.webm,.ogg,.flac" multiple>
         <!-- 兼容模式：部分国产内核（X5/夸克/UC/厂商自带）对 accept 过滤有已知 bug，
              会显示"没有音频文件"或直接不弹窗；此入口不过滤格式，选中后照常解码校验 -->
         <input type="file" id="fileInputAny" class="file-input-hidden" multiple>
@@ -66,7 +66,7 @@
           <span class="rec-dot" id="recordDot" hidden></span>
           <span id="recordTime"></span>
         </div>
-        <p class="hint">支持多选：mp3 / m4a / wav / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
+        <p class="hint">支持多选：mp3 / m4a / wav / mp4 / mov / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
       </div>
     </section>
 
