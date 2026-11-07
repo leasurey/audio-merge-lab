@@ -2742,7 +2742,8 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       rms: s.rms,
       silent: s.silent,
       per: s.per,
-      fix: seg.decodeFixNote || null
+      fix: seg.decodeFixNote || null,
+      attempts: seg.decodeAttempts || null
     });
   }
 
@@ -2786,6 +2787,9 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       L.push('    各声道: ' + (d.per || []).map(function (p, i) {
         return 'ch' + i + ' RMS=' + p.rms + ' 峰值=' + p.peak + (p.nan ? ' NaN=' + p.nan : '');
       }).join(' | '));
+      if (d.attempts && d.attempts.length > 1) {
+        L.push('    解码尝试: ' + d.attempts.join('s, ') + 's（取最长 ' + d.frames / d.rate + 's）');
+      }
       if (d.fix) L.push('    ★ 速度校正: ' + d.fix);
     }
 
@@ -3318,13 +3322,41 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
 
       var audioBuf = null;
       var primaryErr = null;
-      try {
-        audioBuf = await decodeAudioData(buf);
-      } catch (e) {
-        primaryErr = e; // 平台解码器失败 → 走降级链
+      var attemptDurs = [];
+
+      /* 安卓 MediaCodec 解 AAC 会随机丢帧（实测：54.36s 容器只解出 50.15s，丢 4.2s），
+       * 且不报错——表现为内容里一阵阵掉样本（刺啦声）、总时长缩短。
+       * 丢帧与调度相关、非确定性：多解几次取最长结果可显著缓解。
+       * ⚠️ decodeAudioData 每次都会 detach 输入，重试前必须重新读文件。 */
+      var trueDur = seg.expectDuration > 0 ? seg.expectDuration : null;
+      if (!trueDur) {
+        var mediaDur0 = await probeMediaDuration(seg.blob);
+        if (mediaDur0 && isFinite(mediaDur0) && mediaDur0 > 0) trueDur = mediaDur0;
       }
-      // 解码期间该片段可能已被移除
-      if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+      var closeEnough = function (d) {
+        return !trueDur || Math.abs(d - trueDur) / trueDur < 0.02;
+      };
+      var MAX_ATTEMPTS = trueDur ? 4 : 1;
+
+      var best = null;
+      for (var att = 0; att < MAX_ATTEMPTS; att++) {
+        if (att > 0) setStatus('平台解码疑似丢帧，正在重试（' + (att + 1) + '/' + MAX_ATTEMPTS + '）…');
+        var ab = att === 0 ? buf : await readAsArrayBuffer(seg.blob);
+        var one = null;
+        try {
+          one = await decodeAudioData(ab);
+        } catch (e) {
+          if (!best) primaryErr = e; // 平台解码器失败 → 走降级链
+        }
+        // 解码期间该片段可能已被移除
+        if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+        if (one && one.length > 0) {
+          attemptDurs.push(+one.duration.toFixed(2));
+          if (!best || one.duration > best.duration) best = one;
+          if (closeEnough(one.duration)) break; // 已与基准一致，无需重试
+        }
+      }
+      audioBuf = best;
 
       /* 部分损坏/不被支持的文件，平台解码器会"成功"返回一个 0 帧的 AudioBuffer
        * （Chrome/Edge 实测：魔数合法但内容无效的 MP3 → duration 0、不报错）。
@@ -3350,28 +3382,20 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       }
 
       if (audioBuf) {
-        /* 解码速度校正：部分安卓内核的 decodeAudioData 返回「源文件帧数 + 上下文采样率」，
-         * 实际内容被加速（44.1k 素材标成 48k → 快 8.8%），表现为整段变调的刺耳杂音、
-         * 每段时长缩短。用独立于解码器的时长基准（媒体元素元数据 / 录制秒表）比对，
-         * 偏差超过 3% 就按比例校正有效采样率——之后走正常的重采样，速度恢复正确。 */
+        /* 解码速度校正（丢帧兜底）：重试后仍比基准短，说明丢帧在多次解码中都发生了。
+         * 按比例校正有效采样率，把残缺音频拉回正确总时长——掉帧处仍是缺口（无法凭空
+         * 补回内容），但速度恢复正确，刺啦声的密度和变调会显著减轻。 */
         var decRate = audioBuf.sampleRate;
         var decFix = null;
-        if (seg.expectDuration > 0) {
-          var devR = Math.abs(audioBuf.duration - seg.expectDuration) / seg.expectDuration;
-          if (devR > 0.03) {
-            decRate = Math.round(decRate * audioBuf.duration / seg.expectDuration);
-            decFix = '录制 ' + seg.expectDuration.toFixed(2) + 's / 解出 ' +
-              audioBuf.duration.toFixed(2) + 's → 有效采样率按 ' + decRate + 'Hz 校正';
-          }
-        } else {
-          var mediaDur = await probeMediaDuration(seg.blob);
-          if (mediaDur && audioBuf.duration > 0) {
-            var devM = Math.abs(audioBuf.duration - mediaDur) / mediaDur;
-            if (devM > 0.03) {
-              decRate = Math.round(decRate * audioBuf.duration / mediaDur);
-              decFix = '容器 ' + mediaDur.toFixed(2) + 's / 解出 ' +
-                audioBuf.duration.toFixed(2) + 's → 有效采样率按 ' + decRate + 'Hz 校正';
-            }
+        if (trueDur) {
+          var devT = Math.abs(audioBuf.duration - trueDur) / trueDur;
+          if (devT > 0.03) {
+            decRate = Math.round(decRate * audioBuf.duration / trueDur);
+            decFix = '基准 ' + trueDur.toFixed(2) + 's / 解出 ' + audioBuf.duration.toFixed(2) +
+              's（重试 ' + attemptDurs.length + ' 次）→ 有效采样率按 ' + decRate + 'Hz 校正';
+            shortWarning = shortWarning ||
+              ('本机解码丢帧（解出 ' + audioBuf.duration.toFixed(1) + 's / 应为 ' +
+               trueDur.toFixed(1) + 's），已校正速度但缺口无法补回，建议改用 MP3/WAV 素材');
           }
         }
 
@@ -3398,7 +3422,10 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
         seg.duration = audioBuf.duration * (decRate / audioBuf.sampleRate);
         seg.sampleRate = decRate;
         seg.channels = audioBuf.numberOfChannels;
-        diagSeg(seg, '平台 decodeAudioData' + (decFix ? '（速度已校正）' : ''));
+        seg.decodeAttempts = attemptDurs;
+        diagSeg(seg, '平台 decodeAudioData' +
+          (attemptDurs.length > 1 ? '（重试 ' + attemptDurs.length + ' 次）' : '') +
+          (decFix ? '（速度已校正）' : ''));
         seg.decoding = false;
         if (seg.removed) return; // 解码期间被删除：不再渲染/汇报幽灵片段
         renderList();
