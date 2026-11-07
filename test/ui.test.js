@@ -270,4 +270,17 @@ test('导入控件覆盖 mov/mp4，解码基准优先取音频轨时长（V0.5.3
   assert.ok(app.includes("sniffDur.container === 'mp4'"), '仅对 mp4/mov 容器使用该基准');
 });
 
+test('mp4/mov 内置优先解码：AAC 解封装 → 切片 → 回退平台（V0.5.3）', () => {
+  assert.ok(app.includes('var preFb = null'), '缺少内置预解码变量');
+  assert.ok(app.includes("sniffPre.container === 'mp4'"), '只对 mp4/mov 做内置优先');
+  const i1 = app.indexOf('preFb = await fallbackDecodeAac');
+  const i2 = app.indexOf('preFb = await extractEmbeddedMp3');
+  assert.ok(i1 > 0, '应先试 AAC 解封装');
+  assert.ok(i2 > i1, 'AAC 失败后应接着试切片提取');
+  assert.ok(app.includes('preSec < trueDur * 0.97'), '内置结果明显偏短时必须回退平台');
+  assert.ok(app.includes('for (var att = 0; !preFb && att < MAX_ATTEMPTS; att++)'),
+    '内置成功时不得再走平台解码/重试');
+  assert.ok(app.includes('var fb = preFb'), '降级链应复用已解好的结果，避免重复解码');
+});
+
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

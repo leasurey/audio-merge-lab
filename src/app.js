@@ -978,8 +978,41 @@
       };
       var MAX_ATTEMPTS = trueDur ? 4 : 1;
 
+      /* MP4 / MOV：优先走内置解封装 + faad2，而不是先交给平台解码器。
+       * 理由：安卓 MediaCodec 解 AAC 会丢帧、出毛刺（V0.5.2 的根因）；而基于时长的
+       * 校验只能识别"变短"，识别不了"时长正常但内容有毛刺"。直接走内置路径，三个
+       * 平台行为一致、结果可预测，也才真正做到"导入即提取内部音轨"。
+       * 解封装/解码失败、或解出的时长明显短于基准时，仍回退到平台解码器。 */
+      var preFb = null;
+      var sniffPre = AudioCore.sniffFormat(headBytes);
+      if (sniffPre.container === 'mp4') {
+        try {
+          preFb = await fallbackDecodeAac(new Uint8Array(buf), 'mp4');
+        } catch (ePre) {
+          preFb = null;
+        }
+        if (!preFb) {
+          // 音轨不是 AAC（MP4 + MPEG audio），或 fMP4/异常结构没有 stbl：
+          // 接着试帧级切片提取，仍失败才交回平台解码器
+          try {
+            preFb = await extractEmbeddedMp3(new Uint8Array(buf));
+          } catch (ePre2) {
+            preFb = null;
+          }
+        }
+        // 解码期间该片段可能已被移除
+        if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
+        if (preFb && trueDur) {
+          var preSec = AudioCore.pcmDurationSec(preFb.pcm);
+          if (!(preSec > 0) || preSec < trueDur * 0.97) {
+            // 内置解封装得到的时长明显偏短 → 结构可能不被支持，交回平台解码器
+            preFb = null;
+          }
+        }
+      }
+
       var best = null;
-      for (var att = 0; att < MAX_ATTEMPTS; att++) {
+      for (var att = 0; !preFb && att < MAX_ATTEMPTS; att++) {
         if (att > 0) setStatus('平台解码疑似丢帧，正在重试（' + (att + 1) + '/' + MAX_ATTEMPTS + '）…');
         var ab = att === 0 ? buf : await readAsArrayBuffer(seg.blob);
         var one = null;
@@ -1109,16 +1142,18 @@
       // 被 detach，任何基于它的视图长度都会变成 0。
       var info = AudioCore.sniffFormat(headBytes);
       seg.sniff = info;
-      var fb = null, fbErr = null;
+      var fb = preFb, fbErr = null;   // 内置优先路径已解好则直接复用，不重复解码
       try {
-        /* 不按容器白名单过滤：所有格式都交给兜底链，由它决定能否处理。
-         * 旧实现只把 wav/mp3/mp4/aac-adts 送进兜底链，其余（ogg、flac、m4b 等）
-         * 直接判死——但"容器声明与实际编码不符"的文件恰恰常落在这类容器里
-         * （Ogg 头包着 MP3 数据、扩展名被改过）。切片提取是纯帧级判断，
-         * 与应用层认不认识这个容器无关，因此不该被白名单挡住。
-         * 确实不支持的格式仍返回 null，错误信息与原来一致。 */
-        var fullBuf = await readAsArrayBuffer(seg.blob);
-        fb = await fallbackDecode(new Uint8Array(fullBuf), info);
+        if (!fb) {
+          /* 不按容器白名单过滤：所有格式都交给兜底链，由它决定能否处理。
+           * 旧实现只把 wav/mp3/mp4/aac-adts 送进兜底链，其余（ogg、flac、m4b 等）
+           * 直接判死——但"容器声明与实际编码不符"的文件恰恰常落在这类容器里
+           * （Ogg 头包着 MP3 数据、扩展名被改过）。切片提取是纯帧级判断，
+           * 与应用层认不认识这个容器无关，因此不该被白名单挡住。
+           * 确实不支持的格式仍返回 null，错误信息与原来一致。 */
+          var fullBuf = await readAsArrayBuffer(seg.blob);
+          fb = await fallbackDecode(new Uint8Array(fullBuf), info);
+        }
       } catch (e2) {
         fbErr = e2;
       }
@@ -1166,6 +1201,9 @@
             (info.label || '未知容器') + '，内部含 MP3 数据），已自动提取 ' +
             fb.embedded.frames + ' 帧解码完成：' + fmtTime(seg.duration) +
             '，合计 ' + fmtTime(totalDuration()));
+        } else if (preFb) {
+          reportDecodeStatus(seg, '「' + seg.name + '」已用内置解码器（' + label +
+            '）提取内部音轨：' + fmtTime(seg.duration) + '，合计 ' + fmtTime(totalDuration()));
         } else if (platformSuspicious) {
           reportDecodeStatus(seg, '「' + seg.name + '」平台解码结果异常，已改用内置解码器（' + label +
             '）解出 ' + fmtTime(seg.duration) +
