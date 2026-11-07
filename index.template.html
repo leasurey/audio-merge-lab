@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="description" content="纯本地音频合并工具：导入或录音频，合并为 WAV / MP3 / M4A。iOS / Android / Web 通用。">
+<meta name="description" content="浏览器里把多段录音拼成一个文件，输出 WAV / MP3 / M4A。iPhone、安卓、电脑都能用。">
 <title>录音合并器 · Audio Merge Lab</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
@@ -24,7 +24,7 @@
 <body>
 <div class="wrap">
 
-  <!-- 应用标识与隐私说明：主标题 → 一句话功能 → 隐私承诺 → 次级入口 -->
+  <!-- 应用标识：主标题 → 一句话功能 → 一句实测事实 → 次级入口 -->
   <header class="app-header">
     <div class="app-identity">
       <span class="app-mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -33,9 +33,9 @@
         <p class="app-subtitle">Audio Merge Lab</p>
       </div>
     </div>
-    <p class="app-intro">导入或录下多段音频，按顺序合并为一个 WAV / MP3 / M4A 文件。</p>
+    <p class="app-intro">导入几段录音，调整顺序，合并成一个文件。</p>
     <div class="privacy-row">
-      <span class="privacy-chip">纯本地处理 · 不上传</span>
+      <span class="privacy-chip">不上传，断网也能用</span>
       <a class="header-link" href="guide.html">使用指南 →</a>
     </div>
   </header>
@@ -66,7 +66,7 @@
           <span class="rec-dot" id="recordDot" hidden></span>
           <span id="recordTime"></span>
         </div>
-        <p class="hint">支持多选：mp3 / m4a / wav / mp4 / mov / webm / ogg / flac。文件仅在浏览器内解码，不会发送到任何服务器。</p>
+        <p class="hint">mp3 / m4a / wav / mp4 / mov / webm / ogg / flac，可多选。</p>
       </div>
     </section>
 
@@ -183,7 +183,7 @@
   </div>
 
   <footer id="appFooter">
-    <span class="footer-line">Audio Merge Lab <span id="appVersion"></span> · 纯前端实现 · 数据不离开你的设备</span>
+    <span class="footer-line"><span id="appVersion"></span></span>
     <span class="footer-line footer-author">作者 k · <a href="https://space.bilibili.com/527557440" target="_blank" rel="noopener noreferrer">B 站主页</a> · <a href="https://github.com/leasurey/audio-merge-lab" target="_blank" rel="noopener noreferrer">GitHub 项目</a> · <a href="guide.html">使用指南</a> · <a href="convert.html">格式转换</a> · <a href="compat.html">兼容性自检</a></span>
   </footer>
 </div>

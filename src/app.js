@@ -1454,7 +1454,7 @@
     ul.textContent = '';
 
     if (state.segments.length === 0) {
-      ul.appendChild(el('li', 'empty', '还没有片段。导入音频文件，或点击上方按钮开始录音。'));
+      ul.appendChild(el('li', 'empty', '还没有片段。导入文件，或录一段。'));
       $('listCount').textContent = '0 段';
       return;
     }
@@ -2863,7 +2863,7 @@
       detectFormats();
       setFormat('mp3');
       renderList();
-      setStatus('就绪：导入 mp3 / m4a / wav 等音频，或直接录音，然后点击底部「合并为 MP3」');
+      setStatus('导入音频或录一段，然后点底部「合并」。');
 
       // 探测局域网下载服务（tools/serve.js）：可用才显示「生成保存链接」
       probeDownloadServer();
