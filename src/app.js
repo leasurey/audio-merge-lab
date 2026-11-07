@@ -984,6 +984,8 @@
        * 平台行为一致、结果可预测，也才真正做到"导入即提取内部音轨"。
        * 解封装/解码失败、或解出的时长明显短于基准时，仍回退到平台解码器。 */
       var preFb = null;
+      // 清掉上一次的解析失败原因，避免错误信息串到别的文件上
+      if (AudioCore.mp4ExtractAac) AudioCore.mp4ExtractAac.lastReason = null;
       var sniffPre = AudioCore.sniffFormat(headBytes);
       if (sniffPre.container === 'mp4') {
         try {
@@ -1002,10 +1004,13 @@
         }
         // 解码期间该片段可能已被移除
         if (!state.segments.some(function (s) { return s.id === seg.id; })) return;
-        if (preFb && trueDur) {
+        if (preFb) {
           var preSec = AudioCore.pcmDurationSec(preFb.pcm);
-          if (!(preSec > 0) || preSec < trueDur * 0.97) {
-            // 内置解封装得到的时长明显偏短 → 结构可能不被支持，交回平台解码器
+          /* 三种情况都视为内置解析不可信，交回平台：
+           * ① 解不出时长；② 短于"有效音频"下限（典型：fMP4 的 moov 里 stbl 几乎没有
+           * 样本，真实数据在 moof 里）；③ 明显短于音频轨声明的时长。 */
+          if (!(preSec > 0) || preSec < MIN_VALID_SEC ||
+              (trueDur && preSec < trueDur * 0.97)) {
             preFb = null;
           }
         }
@@ -1235,14 +1240,27 @@
   /** 组装可操作的解码失败信息（含文件大小、检测格式、建议） */
   function decorateDecodeError(seg, info, primaryErr, fbErr) {
     var sizeTxt = seg.blob && typeof seg.blob.size === 'number' ? fmtSize(seg.blob.size) : '大小未知';
-    var reason = primaryErr && primaryErr.message ? primaryErr.message : '平台解码器拒绝该文件';
+    var reason = primaryErr && primaryErr.message ? primaryErr.message : '平台解码器不支持该文件';
     var parts = [
       '「' + seg.name + '」解码失败：' + reason,
       '（文件 ' + sizeTxt + ' · 检测为 ' + (info.label || '未知格式') + '）'
     ];
+    /* 具体失败原因优先于通用建议：内置解析器给出的诊断最能说明问题。
+     * 旧顺序把 info.advice 放在最前，导致"内置解析为什么失败"永远看不到，
+     * 用户只能看到"平台解码器拒绝"这类笼统说法。 */
+    if (fbErr) {
+      parts.push('。内置解析器也失败：' + (fbErr.message || fbErr));
+    } else {
+      var builtin = null;
+      try {
+        if (AudioCore.mp4ExtractAac && AudioCore.mp4ExtractAac.lastReason) {
+          builtin = AudioCore.mp4ExtractAac.lastReason;
+        }
+      } catch (e) { /* 忽略 */ }
+      if (builtin) parts.push('。内置解析未成功：' + builtin);
+    }
     if (info.advice) parts.push('。建议：' + info.advice + '（转换方法见页脚「格式转换」）');
-    else if (fbErr) parts.push('。内置解析器也失败：' + (fbErr.message || fbErr));
-    else parts.push('。可能是文件损坏或不完整，可尝试重新导出该文件，或点下方「兼容模式」重新选择');
+    else if (!fbErr) parts.push('。可能是文件损坏或不完整，可尝试重新导出该文件，或点下方「兼容模式」重新选择');
     return new Error(parts.join(''));
   }
 

@@ -1112,7 +1112,7 @@
         if (sb.type === 'stbl' && inRange(sb, tk.start, tk.end)) { stbl = sb; break; }
       }
     }
-    if (!stbl) return null;
+    if (!stbl) return bail('未找到音频轨（hdlr=soun）的 stbl');
 
     function childrenOf(box) {
       var list = [];
@@ -1142,65 +1142,105 @@
     var stsc = findIn(stblChildren, 'stsc');
     var stco = findIn(stblChildren, 'stco');
     var co64 = findIn(stblChildren, 'co64');
-    if (!stsd || !stsz || !stsc || (!stco && !co64)) return null;
+    // 失败原因写回函数属性，供应用层在报错信息里显示（否则只能看到"平台拒绝"）
+    function bail(msg) { mp4ExtractAac.lastReason = msg; return null; }
 
-    // stsd → mp4a 条目 → 采样率/声道 + esds → AudioSpecificConfig
+    if (!stsd || !stsz || !stsc || (!stco && !co64)) {
+      return bail('音频轨缺少 stsd/stsz/stsc/stco（可能是 fMP4 分片结构）');
+    }
+
+    /* stsd → 找 mp4a 条目。遍历全部条目而不是只看第一条：
+     * 有些容器把其它条目（alac / ac-3 / 私有格式）排在前面。 */
     var stsdBody = stsd.start + stsd.hdr;
     var entryCount = u32(stsdBody + 4);
-    if (entryCount < 1) return null;
-    var e = stsdBody + 8; // 第一个 entry：size(4) + format(4)
-    var eSize = u32(e);
-    if (tag(e + 4, 4) !== 'mp4a') return null; // 只支持 AAC（mp4a）
+    if (entryCount < 1) return bail('stsd 条目数为 0');
+    var e = null, eSize = 0;
+    var pEntry = stsdBody + 8;
+    for (var ei = 0; ei < entryCount; ei++) {
+      if (pEntry + 8 > bytes.length) break;
+      var szE = u32(pEntry);
+      if (szE < 8 || pEntry + szE > stsd.end) break;
+      if (tag(pEntry + 4, 4) === 'mp4a') { e = pEntry; eSize = szE; break; }
+      pEntry += szE;
+    }
+    if (e === null) {
+      var fmt0 = tag(stsdBody + 12, 4).replace(/[^\x20-\x7e]/g, '');
+      return bail('stsd 内没有 mp4a（AAC）条目，实际格式: ' + (fmt0 || '未知'));
+    }
     var channels = u16(e + 24);
     var sampleRate = (u32(e + 32) >>> 16); // 16.16 定点，先取后用无符号右移
 
-    // esds → ES_Descriptor → DecoderConfigDescriptor → AudioSpecificConfig（tag 5）
+    /* esds → AudioSpecificConfig。
+     * 兼容三种入口形态（不同封装工具差异很大）：
+     *   ① ES_Descriptor(3) → DecoderConfigDescriptor(4) → DecSpecificInfo(5)
+     *   ② 直接 DecoderConfigDescriptor(4) → DecSpecificInfo(5)  ← QuickTime 常见
+     *   ③ 直接 DecSpecificInfo(5)
+     * 标准路径失败后再在 esds 范围内扫一次 tag=5 的描述符兜底。 */
+    function descLen(pos) {
+      var v = 0, n = 0;
+      while (n < 4 && pos < bytes.length) {
+        var bb = bytes[pos];
+        v = (v << 7) | (bb & 0x7f);
+        n++;
+        if (!(bb & 0x80)) break;
+      }
+      return { len: v, next: pos + n };
+    }
+    function ascFrom(pos, limit, depth) {
+      if (depth > 3 || pos + 2 > limit) return null;
+      var t = bytes[pos];
+      if (t === 5) {
+        var l = descLen(pos + 1);
+        if (l.len >= 1 && l.len <= 64 && l.next + l.len <= limit) {
+          return bytes.slice(l.next, l.next + l.len);
+        }
+        return null;
+      }
+      if (t === 3 || t === 4) {
+        var l2 = descLen(pos + 1);
+        if (l2.len <= 0 || l2.next + l2.len > limit) return null;
+        var inner = l2.next;
+        if (t === 3) {
+          inner += 3;                          // ES_ID(2) + flags(1)
+          if (bytes[inner - 1] & 0x80) inner += 2;
+          if (bytes[inner - 1] & 0x40) inner += 1 + bytes[inner];
+          if (bytes[inner - 1] & 0x20) inner += 2;
+        } else {
+          inner += 13;                         // objType(1)+bufSize(3)+maxBR(4)+avgBR(4)
+        }
+        return ascFrom(inner, l2.next + l2.len, depth + 1);
+      }
+      return null;
+    }
+
     var asc = null;
     var esds = null;
-    var childStart = e + 36;
+    var childStart = Math.min(e + 36, e + eSize);
     for (var k = childStart; k < e + eSize - 8; k++) {
       if (tag(k, 4) === 'esds') { esds = { start: k }; break; }
     }
-    if (esds) {
-      // esds.start 存的是 type 字段命中位置；描述符从
-      // size(4)+type(4)+fullbox(4) 之后开始，即 type + 8
-      var p2 = esds.start + 8; // ES_DescrTag 位置
-      function descLen(pos) {
-        var v = 0, n = 0;
-        while (n < 4 && pos < bytes.length) {
-          var b = bytes[pos];
-          v = (v << 7) | (b & 0x7f);
-          n++;
-          if (!(b & 0x80)) break;
-        }
-        return { len: v, next: pos + n };
-      }
-      if (bytes[p2] === 3) { // ES_DescrTag
-        var l1 = descLen(p2 + 1);
-        var q = l1.next;
-        q += 3; // ES_ID(2) + flags(1)
-        if (bytes[q - 1] & 0x80) q += 2;          // dependsOn_ES_ID
-        if (bytes[q - 1] & 0x40) q += 1 + bytes[q]; // URL
-        if (bytes[q - 1] & 0x20) q += 2;          // OCR_ES_Id
-        if (bytes[q] === 4) { // DecoderConfigDescrTag
-          var l2 = descLen(q + 1);
-          var r = l2.next + 13; // objType(1)+bufSize(3)+maxBR(4)+avgBR(4)
-          if (bytes[r] === 5) { // DecSpecificInfoTag
-            var l3 = descLen(r + 1);
-            if (l3.len > 0 && r + 2 + l3.len <= bytes.length) {
-              asc = bytes.slice(r + 2, r + 2 + l3.len);
-            }
-          }
-        }
+    if (!esds) return bail('mp4a 条目内没有 esds（拿不到 AudioSpecificConfig）');
+
+    var esdsLimit = Math.min(e + eSize, bytes.length);
+    asc = ascFrom(esds.start + 8, esdsLimit, 0);
+    if (!asc) {
+      for (var q2 = esds.start + 8; q2 + 3 < esdsLimit; q2++) {
+        if (bytes[q2] !== 5) continue;
+        var lq = descLen(q2 + 1);
+        if (lq.len < 1 || lq.len > 64 || lq.next + lq.len > esdsLimit) continue;
+        var aot = bytes[lq.next] >> 3;         // audioObjectType
+        if (aot < 1 || aot > 31) continue;     // 排除误匹配
+        asc = bytes.slice(lq.next, lq.next + lq.len);
+        break;
       }
     }
-    if (!asc || asc.length < 2) return null;
+    if (!asc || asc.length < 2) return bail('esds 内未找到有效的 AudioSpecificConfig');
 
     // stsz → 每帧大小
     var szBody = stsz.start + stsz.hdr;
     var fixedSize = u32(szBody + 4);
     var frameCount = u32(szBody + 8);
-    if (!frameCount) return null;
+    if (!frameCount) return bail('stsz 帧数为 0');
 
     // stsc → 每块帧数；stco/co64 → 块偏移
     function fullEntries(box, itemSize) {
@@ -1221,7 +1261,7 @@
       scPer.push(u32(stscBody + 12 + m * 12));        // 每块帧数
     }
     var chunkOffsets = fullEntries(stco || co64, stco ? 4 : 8);
-    if (!chunkOffsets.length) return null;
+    if (!chunkOffsets.length) return bail('stco/co64 块偏移为空');
 
     function chunkOffset(zeroBased) {
       return stco ? u32(stco.start + stco.hdr + 8 + zeroBased * 4)
@@ -1237,7 +1277,7 @@
     var pos = chunkOffset(chunkIdx);
     for (var fi = 0; fi < frameCount; fi++) {
       var fsize = fixedSize > 0 ? fixedSize : u32(szBody + 12 + fi * 4);
-      if (pos + fsize > bytes.length) return null;
+      if (pos + fsize > bytes.length) return bail('样本偏移超出文件范围（第 ' + fi + ' 帧）');
       frames.push(bytes.subarray(pos, pos + fsize));
       pos += fsize;
       sampleIdx += 1;
