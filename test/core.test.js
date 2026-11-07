@@ -1016,4 +1016,32 @@ test('decodeWav: 8bit 无符号满幅对称映射到 ±1', () => {
   assert.ok(Math.abs(out[1] - out[2]) < 0.02, '中点两侧应基本对称');
 });
 
+test('createSegmentConverter: 解码器吐出 NaN / Infinity 时不得污染成品', () => {
+  // 安卓平台解码器（MediaCodec 一族）在部分 AAC/MP3 上会返回 NaN 且不报错。
+  // Int16 写入时 NaN 会被静默变成 0，听感是波形突跳的「电流声/噼啪」。
+  // 约定：NaN 归零，±Infinity 被钳位到满幅，输出中不允许出现非有限值。
+  const n = 64;
+  const ch = new Float32Array(n);
+  ch[10] = NaN;
+  ch[20] = Infinity;
+  ch[30] = -Infinity;
+  for (let i = 0; i < n; i++) if (i !== 10 && i !== 20 && i !== 30) ch[i] = 0.5;
+  const pcm = { sampleRate: 48000, channels: [ch] };
+
+  const conv = Core.createSegmentConverter(pcm, {
+    targetRate: 48000, targetChannels: 1, gain: 1, fadeMs: 0,
+    srcStart: 0, srcEnd: n, int16: true
+  });
+  const out = new Int16Array(n);
+  conv.convert(0, n, [out]);
+
+  for (let i = 0; i < n; i++) {
+    assert.ok(Number.isFinite(out[i]), '第 ' + i + ' 个样本非有限值：' + out[i]);
+  }
+  assert.strictEqual(out[10], 0, 'NaN 必须归零');
+  assert.strictEqual(out[20], 0x7fff, '+Infinity 应钳位到满幅');
+  assert.strictEqual(out[30], -0x8000, '-Infinity 应钳位到负满幅');
+  assert.ok(Math.abs(out[0] - 0.5 * 0x7fff) <= 1, '正常样本不得被改动');
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');

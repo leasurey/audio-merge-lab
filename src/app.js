@@ -173,6 +173,135 @@
     return (bytes / 1024 / 1024).toFixed(2) + ' MB';
   }
 
+  /* ---------------- 诊断模式 ----------------
+   * 仅 `?diag=1` / `?nosink=1` 触发，正常使用完全不受影响。
+   * 背景：安卓端"导出有杂音、段落静音/缺失"在 Windows Edge 与 iOS 上无法复现，
+   * 只能让设备自己把关键事实打印出来——解码出的 PCM 是否已经坏了、落盘走了哪条
+   * 分支、写出字节数与头部声明是否一致。三条信息足以把问题锁在解 码 / 落盘 / 传输 之一。
+   */
+  var DIAG = /[?&]diag=1/.test(location.search);
+  var NO_SINK = /[?&]nosink=1/.test(location.search);
+  var diagSegs = [];
+
+  function pcmStats(pcm) {
+    var chs = (pcm && pcm.channels) || [];
+    var frames = chs.length ? chs[0].length : 0;
+    var nan = 0, peak = 0, sum = 0, silent = 0, total = 0;
+    var per = [];
+    for (var c = 0; c < chs.length; c++) {
+      var a = chs[c];
+      var cNan = 0, cPeak = 0, cSum = 0, cN = 0;
+      for (var i = 0; i < a.length; i++) {
+        var v = a[i];
+        if (v !== v) { cNan++; nan++; continue; } // NaN
+        var av = v < 0 ? -v : v;
+        if (av > cPeak) cPeak = av;
+        if (av > peak) peak = av;
+        if (av < 1e-4) silent++;
+        cSum += v * v;
+        sum += v * v;
+        cN++;
+        total++;
+      }
+      per.push({
+        rms: cN ? +Math.sqrt(cSum / cN).toFixed(4) : 0,
+        peak: +cPeak.toFixed(4),
+        nan: cNan
+      });
+    }
+    return {
+      frames: frames,
+      nan: nan,
+      peak: +peak.toFixed(4),
+      rms: total ? +Math.sqrt(sum / total).toFixed(4) : 0,
+      silent: total ? +(silent / total).toFixed(3) : 0,
+      per: per
+    };
+  }
+
+  function diagSeg(seg, via) {
+    if (!DIAG) return;
+    var s = pcmStats(seg.pcm);
+    diagSegs.push({
+      name: seg.name,
+      type: (seg.blob && seg.blob.type) || '?',
+      size: seg.blob ? seg.blob.size : 0,
+      via: via,
+      rate: seg.sampleRate,
+      ch: seg.channels,
+      frames: s.frames,
+      dur: +(seg.duration || 0).toFixed(2),
+      nan: s.nan,
+      peak: s.peak,
+      rms: s.rms,
+      silent: s.silent,
+      per: s.per
+    });
+  }
+
+  /** 记录一次合并的关键事实（由 streamMerge 调用） */
+  function diagMerge(info) {
+    if (!DIAG) return;
+    diagSegs.push({ merge: info });
+  }
+
+  function renderDiag() {
+    if (!DIAG) return;
+    var L = [];
+    L.push('=== 录音合并器 诊断报告 ===');
+    L.push('时间: ' + new Date().toString());
+    L.push('UA: ' + navigator.userAgent);
+    L.push('AudioContext.sampleRate: ' + (state.audioCtx ? state.audioCtx.sampleRate : '未创建'));
+    L.push('落盘: ' + (NO_SINK ? '已强制关闭（内存拼接）' : '自动选择'));
+    L.push('');
+    L.push('-- 片段（' + diagSegs.length + ' 条记录） --');
+    for (var i = 0; i < diagSegs.length; i++) {
+      var d = diagSegs[i];
+      if (d.merge) {
+        L.push('');
+        L.push('-- 合并 --');
+        L.push('目标: ' + d.merge.rate + 'Hz / ' + d.merge.ch + 'ch | 落盘方式: ' + d.merge.sink);
+        L.push('归一化: ' + (d.merge.normalize ? '开' : '关') + ' | 增益: ' + d.merge.gain +
+          ' | 间隔: ' + d.merge.gap + 's');
+        L.push('计划帧数: ' + d.merge.totalFrames + ' | 实写帧数: ' + d.merge.writtenFrames +
+          ' | 一致: ' + (d.merge.totalFrames === d.merge.writtenFrames));
+        L.push('成品: ' + d.merge.blobSize + ' 字节');
+        L.push('落盘写入: ' + (d.merge.sinkBytes == null ? '—（内存拼接）' : d.merge.sinkBytes + ' 字节') +
+          (d.merge.sinkBytes == null ? '' : ' | 与成品一致: ' + (d.merge.sinkBytes === d.merge.blobSize)));
+        L.push('头部回读: ' + (d.merge.header || '未读取'));
+        continue;
+      }
+      L.push('[' + (i + 1) + '] ' + d.name);
+      L.push('    blob: ' + d.type + ' | ' + d.size + ' 字节 | 解码通道: ' + d.via);
+      L.push('    PCM: ' + d.rate + 'Hz / ' + d.ch + 'ch / ' + d.frames + ' 帧 / ' + d.dur + 's');
+      L.push('    NaN: ' + d.nan + ' | 峰值: ' + d.peak + ' | RMS: ' + d.rms + ' | 近静音占比: ' + d.silent);
+      L.push('    各声道: ' + (d.per || []).map(function (p, i) {
+        return 'ch' + i + ' RMS=' + p.rms + ' 峰值=' + p.peak + (p.nan ? ' NaN=' + p.nan : '');
+      }).join(' | '));
+    }
+
+    var box = document.getElementById('diagBox');
+    if (!box) {
+      box = document.createElement('pre');
+      box.id = 'diagBox';
+      box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;margin:0;' +
+        'max-height:55vh;overflow:auto;padding:12px;font:12px/1.5 monospace;' +
+        'background:rgba(20,20,22,.96);color:#e8e8ea;white-space:pre-wrap;word-break:break-all;' +
+        'border-top:2px solid #4f8cff;-webkit-user-select:text;user-select:text';
+      box.addEventListener('click', function () {
+        try {
+          var r = document.createRange();
+          r.selectNodeContents(box);
+          var s = window.getSelection();
+          s.removeAllRanges();
+          s.addRange(r);
+        } catch (e) { /* 忽略 */ }
+      });
+      document.body.appendChild(box);
+    }
+    box.textContent = L.join('\n');
+  }
+
   function nowStamp() {
     var d = new Date();
     function p(n) { return (n < 10 ? '0' : '') + n; }
@@ -605,6 +734,7 @@
         seg.duration = audioBuf.duration;
         seg.sampleRate = audioBuf.sampleRate;
         seg.channels = audioBuf.numberOfChannels;
+        diagSeg(seg, '平台 decodeAudioData');
         seg.decoding = false;
         if (seg.removed) return; // 解码期间被删除：不再渲染/汇报幽灵片段
         renderList();
@@ -649,6 +779,7 @@
         seg.duration = AudioCore.pcmDurationSec(fb.pcm);
         seg.sampleRate = fb.pcm.sampleRate;
         seg.channels = fb.pcm.channels.length;
+        diagSeg(seg, '内置 ' + (fb.decoder || '?'));
         seg.decoding = false;
         seg.usedFallback = true;
         // 平台只解出一小段（典型：损坏 MP3 被解成几十毫秒噪声）时，内置解析器的结果
@@ -1134,7 +1265,18 @@
       state.recordPending = false;
       var mimeType = pickMimeType();
       state.recordChunks = [];
-      state.mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : undefined);
+      /* 显式指定码率：不同内核对 MediaRecorder 默认音频码率的处理差异很大，
+       * 安卓上默认值可能低到 32–64kbps，opus/AAC 在低码率下会出现明显的
+       * "沙沙/电流"类编码伪影。128kbps 语音足够且不增加多少体积；
+       * 个别设备不接受该选项时退回不带参数构造，不影响可用性。 */
+      try {
+        state.mediaRecorder = new MediaRecorder(stream, {
+          mimeType: mimeType || undefined,
+          audioBitsPerSecond: 128000
+        });
+      } catch (e) {
+        state.mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType: mimeType } : undefined);
+      }
       state.mediaRecorder.ondataavailable = function (e) {
         if (e.data && e.data.size > 0) state.recordChunks.push(e.data);
       };
@@ -1225,6 +1367,7 @@
    * 均不可用（旧 Safari 等）返回 null，调用方回落内存拼接。
    */
   async function openMergeSink(ext) {
+    if (NO_SINK) return null; // 诊断开关：强制走内存拼接，用于区分"落盘坏"与"解码坏"
     if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') return null;
     var name = OPFS_PREFIX + nowStamp() + '.' + ext;
     try {
@@ -1238,10 +1381,31 @@
       if (typeof handle.createSyncAccessHandle === 'function') {
         var access = await handle.createSyncAccessHandle();
         access.truncate(0);
+        var writePos = 0;
         return {
           opfs: true,
+          kind: 'sync-handle',
           name: name,
-          write: function (bytes) { access.write(bytes); return Promise.resolve(); },
+          /**
+           * 必须处理「部分写入」。
+           * FileSystemSyncAccessHandle.write() 允许只写一部分并返回实际写入的字节数，
+           * 旧实现直接丢弃返回值：一旦某次只写了几 KB，后续数据会整体前移，
+           * WAV 的采样就此错位——听感是「严重杂音 + 段落静音/缺失」，而且文件长度
+           * 还会小于头部声明。桌面端每次都能整块写完，所以这个缺陷只在存储更慢、
+           * 实现有差异的安卓上暴露。现在按显式偏移循环写完，并把指针自己记牢。
+           */
+          write: function (bytes) {
+            var off = 0;
+            while (off < bytes.byteLength) {
+              var chunk = off ? bytes.subarray(off) : bytes;
+              var n = access.write(chunk, { at: writePos + off });
+              if (!n || n <= 0) throw new Error('OPFS 写入被拒绝（返回 ' + n + '）');
+              off += n;
+            }
+            writePos += bytes.byteLength;
+            return Promise.resolve();
+          },
+          bytes: function () { return writePos; },
           finish: async function () {
             try { access.flush(); } catch (e) { /* 忽略 */ }
             access.close();
@@ -1255,10 +1419,16 @@
       }
       if (typeof handle.createWritable === 'function') {
         var writable = await handle.createWritable();
+        var written2 = 0;
         return {
           opfs: true,
+          kind: 'writable',
           name: name,
-          write: async function (bytes) { await writable.write(bytes); },
+          write: async function (bytes) {
+            await writable.write(bytes);
+            written2 += bytes.byteLength;
+          },
+          bytes: function () { return written2; },
           finish: async function () {
             await writable.close();
             return await handle.getFile();
@@ -1488,6 +1658,33 @@
       } else {
         blob = new Blob(parts, { type: state.format === 'mp3' ? 'audio/mpeg' : 'audio/wav' });
       }
+      if (DIAG) {
+        var headerInfo = null;
+        try {
+          var headBytes = new Uint8Array(await blob.slice(0, 44).arrayBuffer());
+          var dv = new DataView(headBytes.buffer);
+          headerInfo = 'ch=' + dv.getUint16(22, true) +
+            ' rate=' + dv.getUint32(24, true) +
+            ' bits=' + dv.getUint16(34, true) +
+            ' dataSize=' + dv.getUint32(40, true) +
+            ' / 实际 data=' + (blob.size - 44);
+        } catch (e) {
+          headerInfo = '读取失败：' + (e && e.message ? e.message : e);
+        }
+        diagMerge({
+          rate: plan.targetSampleRate,
+          ch: plan.targetChannels,
+          sink: sink ? (sink.kind || 'opfs') : 'memory',
+          normalize: $('normalizeChk').checked,
+          gain: +gain.toFixed(3),
+          gap: gapSec,
+          totalFrames: plan.totalFrames,
+          writtenFrames: writtenFrames,
+          sinkBytes: (sink && sink.bytes) ? sink.bytes() : null,
+          blobSize: blob.size,
+          header: headerInfo
+        });
+      }
       return {
         blob: blob,
         sampleRate: plan.targetSampleRate,
@@ -1691,6 +1888,7 @@
         finishResult(r.blob, r.ext, r.mime, {
           sampleRate: mTarget, durationSec: mDur, bitrate: 0
         });
+        renderDiag();
         return;
       }
 
@@ -1737,6 +1935,7 @@
           durationSec: result.durationSec,
           bitrate: state.format === 'mp3' ? state.bitrate : 0
         });
+      renderDiag();
     } catch (err) {
       if (err && err.code === 'CANCELED') {
         setStatus('已取消合并');
@@ -2243,6 +2442,9 @@
 
       // 通知启动守卫：应用已就绪（守卫会撤掉可能已显示的失败提示）
       if (typeof window.__AML_BOOTED === 'function') window.__AML_BOOTED();
+
+      // 诊断模式：先把环境信息显示出来（确认开关生效），合并后再补充片段与合并数据
+      renderDiag();
 
       // PWA 离线缓存：仅在真实 http(s) 部署时注册（跳过 localhost 与 Capacitor 壳，
       // 避免 Capacitor 本地资源服务器被缓存导致更新后拿到旧文件）

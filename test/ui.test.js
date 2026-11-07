@@ -205,4 +205,12 @@ test('录音完整性校验：录制时长与解码时长偏差过大要给出�
   assert.ok(app.includes('实际只解出'), '缺少时长偏差提示文案');
 });
 
+test('OPFS 同步写入必须处理部分写入（否则安卓上数据整体错位）', () => {
+  // write() 允许只写一部分并返回字节数；丢弃返回值会让后续数据前移，
+  // WAV 采样错位、成品短于头部声明。必须按偏移循环写完。
+  assert.ok(app.includes('while (off < bytes.byteLength)'), '缺少部分写入的重试循环');
+  assert.ok(app.includes('access.write(chunk, { at: writePos + off })'), '需用显式偏移写入');
+  assert.ok(app.includes("if (!n || n <= 0)"), '写入 0 字节必须报错，不能静默丢数据');
+});
+
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

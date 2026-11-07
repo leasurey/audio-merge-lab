@@ -281,6 +281,13 @@
     var scratch = new Float32Array(src.length); // 每帧各源声道插值
 
     function emit(v, out, n) {
+      /* NaN / ±Infinity 消毒。
+       * 安卓平台解码器（MediaCodec 一族）在部分 AAC/MP3 上会吐出 NaN 或越界样本，
+       * 而且不报错。旧实现里 NaN 会一路穿过 clamp（NaN 的比较恒为 false），
+       * 最终写进 Int16Array 时被静默变成 0——听感是波形上突然跳到零又跳回来，
+       * 也就是用户描述的「电流声 / 噼啪杂音」。这里显式归零，宁可留一个静音样本，
+       * 也不要把 NaN 扩散到整段。 */
+      if (v !== v) v = 0;
       if (!int16) { out[n] = v; return; }
       v = v < -1 ? -1 : (v > 1 ? 1 : v);
       out[n] = v < 0 ? v * 0x8000 : v * 0x7fff;
