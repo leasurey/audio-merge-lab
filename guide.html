@@ -3,60 +3,442 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="description" content="录音合并器使用指南：三步完成音频合并，格式选择、长音频注意事项与常见问题。">
 <title>使用指南 · 录音合并器</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0;
-    background: #0f1115; color: #e8ebf0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    font-size: 15px; line-height: 1.65;
-    -webkit-text-size-adjust: 100%;
+/* 文档页共用样式 —— 使用指南 / 格式转换 / 兼容性自检
+ *
+ * 与主页同一套设计依据：
+ *  - 明暗两套语义色（HIG · Color），不硬编码具体界面色
+ *  - 8pt 间距网格、层级化圆角
+ *  - 中文优先的系统字体栈，Apple 设备上命中苹方（PingFang SC）
+ *
+ * 这里只放文档页需要的组件，主页那套交互控件在 src/styles.css。
+ */
+:root {
+  color-scheme: light;
+
+  --r-card: 14px;
+  --r-control: 10px;
+  --r-pill: 999px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* 语义色 · Light */
+  --bg: #f2f2f7;
+  --card: #ffffff;
+  --fill: rgba(120, 120, 128, 0.12);
+  --separator: rgba(60, 60, 67, 0.12);
+  --label: #000000;
+  --label-2: rgba(60, 60, 67, 0.72);
+  --label-3: rgba(60, 60, 67, 0.60);
+  --tint: #007aff;
+  --ok: #1a7f3c;
+  --ok-bg: rgba(52, 199, 89, 0.12);
+  --warn: #8a4300;
+  --warn-bg: rgba(255, 149, 0, 0.14);
+  --danger: #d70015;
+  --danger-bg: rgba(255, 59, 48, 0.10);
+
+  /* 中文优先：Apple 平台上 -apple-system 即苹方/SF，Windows 回落到雅黑 */
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Courier New", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #000000;
+    --card: #1c1c1e;
+    --fill: rgba(118, 118, 128, 0.24);
+    --separator: rgba(84, 84, 88, 0.60);
+    --label: #ffffff;
+    --label-2: rgba(235, 235, 245, 0.70);
+    --label-3: rgba(235, 235, 245, 0.55);
+    --tint: #0a84ff;
+    --ok: #30d158;
+    --ok-bg: rgba(48, 209, 88, 0.16);
+    --warn: #ff9f0a;
+    --warn-bg: rgba(255, 159, 10, 0.16);
+    --danger: #ff453a;
+    --danger-bg: rgba(255, 69, 58, 0.16);
   }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 16px 14px 40px; }
-  h1 { font-size: 20px; margin: 6px 0 4px; }
-  h2 { font-size: 16px; margin: 22px 0 8px; }
-  .sub { color: #9aa4b2; font-size: 13px; margin: 0 0 6px; }
-  .nav { font-size: 13px; margin: 10px 0 4px; }
-  .nav a { color: #8ab4ff; margin-right: 14px; text-decoration: none; }
-  .card {
-    background: #171b22; border: 1px solid #2a313c; border-radius: 14px;
-    padding: 14px; margin: 12px 0;
-  }
-  .step { display: flex; gap: 10px; margin: 12px 0; }
-  .num {
-    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
-    background: #1d222b; border: 1px solid #2a313c; color: #8ab4ff;
-    font-size: 12px; display: flex; align-items: center; justify-content: center;
-    margin-top: 3px;
-  }
-  .step b { color: #e8ebf0; }
-  .step p { margin: 2px 0 0; color: #b9c2ce; font-size: 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
-  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #232932; vertical-align: top; }
-  th { color: #9aa4b2; font-weight: 600; }
-  td b { color: #e8ebf0; }
-  .hint { font-size: 12px; color: #9aa4b2; }
-  .tag {
-    display: inline-block; font-size: 11px; font-weight: 700; border-radius: 5px;
-    padding: 1px 6px; margin-right: 4px;
-  }
-  .tag.ok { background: #17372a; color: #6fd7a2; }
-  .tag.warn { background: #33290f; color: #f0d08a; }
-  .faq q { display: block; font-weight: 600; color: #e8ebf0; margin-top: 10px; quotes: none; }
-  .faq p { margin: 2px 0 0; color: #b9c2ce; font-size: 14px; }
-  .back { text-align: center; margin-top: 22px; font-size: 14px; }
-  .back a { color: #8ab4ff; }
-  a { color: #8ab4ff; }
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  /* 先写字面值再写变量：不支持 var() 的极旧内核会丢掉第二条声明，
+     退化成浏览器默认排版（内容仍完整可读），不会只剩白底黑字无间距。 */
+  background: #f2f2f7;
+  background: var(--bg);
+  color: #000000;
+  color: var(--label);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: calc(var(--sp-6) + env(safe-area-inset-top)) var(--sp-4)
+    calc(var(--sp-8) + env(safe-area-inset-bottom));
+}
+
+/* ---------- 页头 ---------- */
+h1 {
+  margin: 0 0 var(--sp-1);
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+.sub {
+  margin: 0 0 var(--sp-3);
+  color: var(--label-2);
+  font-size: 15px;
+}
+
+.nav {
+  margin: 0 0 var(--sp-5);
+  font-size: 15px;
+}
+
+.nav a {
+  color: var(--tint);
+  text-decoration: none;
+  margin-right: var(--sp-4);
+}
+
+.nav a:hover { text-decoration: underline; }
+
+/* ---------- 分组卡片 ---------- */
+.card {
+  background: var(--card);
+  border-radius: var(--r-card);
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-3);
+}
+
+.card h2 {
+  margin: 0 0 var(--sp-3);
+  font-size: 17px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.card h2:first-child { margin-top: 0; }
+
+.card h3 {
+  margin: var(--sp-4) 0 var(--sp-2);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.card p {
+  margin: 0 0 var(--sp-2);
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+.card p:last-child { margin-bottom: 0; }
+
+.card b, .card strong { color: var(--label); font-weight: 600; }
+
+a { color: var(--tint); }
+
+code, kbd {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--fill);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.hint {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--label-3);
+  margin: var(--sp-2) 0 0;
+}
+
+/* ---------- 表格 ---------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: var(--sp-2) 0 0;
+  table-layout: auto;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px var(--sp-2);
+  border-bottom: 1px solid var(--separator);
+  vertical-align: top;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 首列一般是格式名（短），不换行以免把宽度让给错列；
+   末列是"适合"这类短语，给一个下限避免被挤成竖排 */
+th:first-child, td:first-child { white-space: nowrap; }
+th:last-child, td:last-child { min-width: 88px; }
+
+tr:last-child td { border-bottom: 0; }
+
+th {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-3);
+  padding-bottom: var(--sp-2);
+}
+
+td { color: var(--label-2); }
+td b, td strong { color: var(--label); font-weight: 600; }
+
+/* ---------- 步骤（使用指南） ---------- */
+.step {
+  display: flex;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0;
+}
+
+.step:first-of-type { margin-top: var(--sp-2); }
+.step:last-of-type { margin-bottom: 0; }
+
+.num {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--label-2);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.step > div:last-child { min-width: 0; }
+
+/* 只命中步骤标题那个 b；正文里的 <b> 是行内强调，不能变成独立块 */
+.step > div:last-child > b:first-child {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.step p b, .step p strong { color: var(--label); font-weight: 600; }
+
+.step p {
+  margin: 3px 0 0;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+/* ---------- 标签 ---------- */
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 5px;
+  padding: 1px 6px;
+  margin-left: 4px;
+  vertical-align: 1px;
+  background: var(--fill);
+  color: var(--label-2);
+}
+
+.tag.ok, .tag.best { background: var(--ok-bg); color: var(--ok); }
+.tag.mid { background: var(--warn-bg); color: var(--warn); }
+.tag.warn { background: var(--danger-bg); color: var(--danger); }
+
+/* ---------- 提示框 ---------- */
+.warn-box {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: var(--r-control);
+  padding: var(--sp-3);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: var(--sp-3) 0 0;
+}
+
+/* ---------- 常见问题 ---------- */
+.faq q {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+  margin-top: var(--sp-4);
+  quotes: none;
+}
+
+.faq q:first-child { margin-top: 0; }
+
+.faq p {
+  margin: 4px 0 0;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+/* ---------- 兼容性自检页 ---------- */
+.verdict {
+  background: var(--card);
+  border-radius: var(--r-card);
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-3);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.verdict.ok { color: var(--ok); }
+.verdict.warn { color: var(--warn); }
+.verdict.bad { color: var(--danger); }
+
+.kv {
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--label-2);
+  word-break: break-word;
+}
+
+.kv b { color: var(--label); font-weight: 600; }
+
+.probes {
+  display: grid;
+  gap: 1px;
+  background: var(--separator);
+  border-radius: var(--r-control);
+  overflow: hidden;
+  margin-top: var(--sp-3);
+}
+
+.probes > * {
+  background: var(--card);
+  padding: 10px var(--sp-3);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.probes li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.probes .tag {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  min-width: 42px;
+  text-align: center;
+}
+
+.probes .tag.pass { background: var(--ok-bg); color: var(--ok); }
+.probes .tag.fail { background: var(--danger-bg); color: var(--danger); }
+.probes .tag.na { background: var(--warn-bg); color: var(--warn); }
+
+.p-label {
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--label);
+}
+
+.p-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--label-3);
+}
+
+pre, .report {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--fill);
+  color: var(--label-2);
+  border-radius: var(--r-control);
+  padding: var(--sp-3);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: var(--sp-3) 0 0;
+}
+
+/* ---------- 按钮 ---------- */
+button, .btn {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--tint);
+  background: var(--fill);
+  border: 0;
+  border-radius: var(--r-control);
+  padding: 10px var(--sp-4);
+  min-height: 44px;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+
+button:active { opacity: 0.6; }
+
+input[type="file"] {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+/* ---------- 返回 ---------- */
+.back {
+  text-align: center;
+  margin: var(--sp-6) 0 var(--sp-3);
+  font-size: 15px;
+}
+
+.back a { color: var(--tint); text-decoration: none; }
+
+.copy { margin: var(--sp-3) 0 0; }
+
+@media (max-width: 520px) {
+  table { font-size: 13px; }
+  th, td { padding: 9px 6px; }
+  th:last-child, td:last-child { min-width: 64px; }
+}
+
+@media (max-width: 380px) {
+  h1 { font-size: 24px; }
+  .card { padding: var(--sp-3); }
+}
+
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>使用指南</h1>
-  <p class="sub">三步把多段录音合成一个文件。全部在本地完成，不上传任何数据。</p>
+  <p class="sub">三步把多段录音合成一个文件。</p>
   <div class="nav">
     <a href="./">← 返回应用</a>
     <a href="convert.html">格式转换</a>
@@ -64,7 +446,7 @@
   </div>
 
   <section class="card">
-    <h2 style="margin-top:4px">三步上手</h2>
+    <h2>三步上手</h2>
     <div class="step">
       <div class="num">1</div>
       <div>
@@ -89,7 +471,7 @@
   </section>
 
   <section class="card">
-    <h2 style="margin-top:4px">输出格式怎么选</h2>
+    <h2>输出格式怎么选</h2>
     <table>
       <tr><th>格式</th><th>特点</th><th>适合</th></tr>
       <tr>
@@ -108,16 +490,16 @@
         <td>想边听边录、兼容苹果设备</td>
       </tr>
     </table>
-    <p class="hint">只看体积不看时间的话：急用选 WAV，发人/传网上选 MP3，要苹果生态兼容选 M4A。<br>
-      小提示：如果所有片段都是单声道（多数手机录音都是），V0.5.0 起会自动按单声道编码，MP3 大约快一倍；
-      混了立体声片段就整次输出立体声。96 kbps 体积最小但<b>编码更慢</b>，不是「越低越快」。</p>
+    <p class="hint">急用选 WAV，发给别人或上传选 MP3，要在苹果设备上接着用选 M4A。<br>
+      所有片段都是单声道时（多数手机录音都是），会自动按单声道编码，MP3 大约快一倍；
+      只要混进一段立体声，整次输出就是立体声。96 kbps 体积最小但<b>编码更慢</b>，不是越低越快。</p>
   </section>
 
   <section class="card">
-    <h2 style="margin-top:4px">长音频与性能</h2>
-    <p style="color:#b9c2ce;font-size:14px;margin:6px 0">
-      V0.3.0 起合并改为流式处理：逐段分块转换、结果直接写入浏览器本地存储（支持 OPFS 时），
-      每段处理完立即释放——两个 40 分钟的录音合并，内存峰值从约 4 GB 降到 1 GB 以内。
+    <h2>长音频与性能</h2>
+    <p>
+      合并是流式的：逐段分块转换，结果直接写进浏览器本地存储（支持 OPFS 时），
+      每段处理完立刻释放。两个 40 分钟的录音合并，内存峰值在 1 GB 以内。
     </p>
     <p class="hint">
       仍需注意：① MP3 编码是 CPU 密集型，40 分钟音频可能要等几分钟（有进度条，可取消）；
@@ -126,13 +508,13 @@
   </section>
 
   <section class="card">
-    <h2 style="margin-top:4px">常见问题</h2>
+    <h2>常见问题</h2>
     <div class="faq">
       <q>点「导入音频文件」没反应，或选择器里没有音频？</q>
       <p>点按钮下方「选不到文件？用兼容模式选择（不过滤格式）」——该入口不做文件类型过滤，任何支持文件选择的浏览器都会弹出选择器。</p>
 
       <q>提示「解码失败」怎么办？</q>
-      <p>应用会自动用内置解码器重试（支持 WAV / MP3），成功时列表标注「内置解码」。若仍失败，提示里会写明检测到的格式：AMR（通话录音）、SILK（微信语音）、WMA / APE 等浏览器都解不了，需要先转换——见<a href="convert.html">格式转换</a>。</p>
+      <p>会先用自己的解析器再试一次，成功时列表标注「内置解码」——WAV、MP3、MP4/M4A 和手机录屏的 MOV 都走这条路。仍然失败时，提示里会写出卡在哪一步。AMR（通话录音）、SILK（微信语音）、WMA、APE 浏览器解不了，需要先转换，见<a href="convert.html">格式转换</a>。</p>
 
       <q>页面打不开 / 白屏？</q>
       <p>换网络或换浏览器（Chrome / Edge / 夸克新版）。白屏时页面顶部会给出提示，点「运行兼容性自检」可查看具体原因。</p>
@@ -141,7 +523,7 @@
       <p>可以，需 HTTPS（在线链接满足）；录出的是 m4a。iOS 上导出会走系统播放器分享，而不是直接下载——这是 Safari 的限制。</p>
 
       <q>文件会上传吗？</q>
-      <p>不会。解码、合并、编码全部在设备本地完成，页面没有任何上传代码；断网也能用（添加到主屏后）。</p>
+      <p>不会。解码、合并、编码都在浏览器里完成，代码里没有上传这一步。加到主屏后断网也能用。</p>
     </div>
   </section>
 
