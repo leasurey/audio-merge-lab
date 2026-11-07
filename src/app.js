@@ -244,7 +244,8 @@
       peak: s.peak,
       rms: s.rms,
       silent: s.silent,
-      per: s.per
+      per: s.per,
+      fix: seg.decodeFixNote || null
     });
   }
 
@@ -288,6 +289,7 @@
       L.push('    各声道: ' + (d.per || []).map(function (p, i) {
         return 'ch' + i + ' RMS=' + p.rms + ' 峰值=' + p.peak + (p.nan ? ' NaN=' + p.nan : '');
       }).join(' | '));
+      if (d.fix) L.push('    ★ 速度校正: ' + d.fix);
     }
 
     var box = document.getElementById('diagBox');
@@ -465,6 +467,48 @@
     var channels = [];
     for (var c = 0; c < buf.numberOfChannels; c++) channels.push(buf.getChannelData(c));
     return { sampleRate: buf.sampleRate, channels: channels };
+  }
+
+  /**
+   * 用媒体元素的元数据读取真实时长。
+   *
+   * 背景（安卓实测 bug，2026-11-07）：部分安卓内核的 decodeAudioData 返回的 PCM
+   * 帧数是「源文件的帧数」，但 AudioBuffer.sampleRate 却声明为上下文采样率——
+   * 44.1kHz 的素材被标成 48kHz，整段音频加速 8.8%，听感是变调的刺耳杂音，
+   * 且每段时长缩短（同一批素材 iOS 导出 108.6s、安卓只有 100.3s）。
+   * 媒体播放器（<audio>）解码这条路径是正确的（原始片段试听干净），因此它的
+   * duration 可作为基准：两者偏差超过 3% 就按比例校正有效采样率。
+   * 返回 null 表示拿不到（webm 无时长头、加载超时），此时不做校正。
+   */
+  var probeAudioEl = null;
+  function probeMediaDuration(blob) {
+    return new Promise(function (resolve) {
+      try {
+        if (!probeAudioEl) probeAudioEl = new Audio();
+        var a = probeAudioEl;
+        var done = false;
+        var url = URL.createObjectURL(blob);
+        var finish = function (v) {
+          if (done) return;
+          done = true;
+          a.onloadedmetadata = null;
+          a.onerror = null;
+          a.removeAttribute('src');
+          try { URL.revokeObjectURL(url); } catch (e) { /* 忽略 */ }
+          resolve(v);
+        };
+        a.preload = 'metadata';
+        a.onloadedmetadata = function () {
+          var d = a.duration;
+          finish(d && isFinite(d) && d > 0 ? d : null);
+        };
+        a.onerror = function () { finish(null); };
+        setTimeout(function () { finish(null); }, 5000);
+        a.src = url;
+      } catch (e) {
+        resolve(null);
+      }
+    });
   }
 
   function readAsArrayBuffer(blob) {
@@ -739,25 +783,55 @@
       }
 
       if (audioBuf) {
-        // 应用内录音：把"录制时长"和"解出的时长"对一遍。偏差过大意味着容器/编码器
-        // 产出的文件不完整（AAC 录制链路尤其容易出现"能解但内容不对"），必须显式
-        // 告知用户，而不是让它以杂音形式出现在成品里。
-        if (!shortWarning && seg.expectDuration > 0) {
-          var dev = Math.abs(audioBuf.duration - seg.expectDuration) / seg.expectDuration;
-          if (dev > 0.2) {
-            shortWarning = '录制约 ' + seg.expectDuration.toFixed(1) + ' 秒，实际只解出 ' +
-              audioBuf.duration.toFixed(1) + ' 秒（偏差 ' + Math.round(dev * 100) +
-              '%）——录音文件可能不完整，请试听后决定是否使用';
+        /* 解码速度校正：部分安卓内核的 decodeAudioData 返回「源文件帧数 + 上下文采样率」，
+         * 实际内容被加速（44.1k 素材标成 48k → 快 8.8%），表现为整段变调的刺耳杂音、
+         * 每段时长缩短。用独立于解码器的时长基准（媒体元素元数据 / 录制秒表）比对，
+         * 偏差超过 3% 就按比例校正有效采样率——之后走正常的重采样，速度恢复正确。 */
+        var decRate = audioBuf.sampleRate;
+        var decFix = null;
+        if (seg.expectDuration > 0) {
+          var devR = Math.abs(audioBuf.duration - seg.expectDuration) / seg.expectDuration;
+          if (devR > 0.03) {
+            decRate = Math.round(decRate * audioBuf.duration / seg.expectDuration);
+            decFix = '录制 ' + seg.expectDuration.toFixed(2) + 's / 解出 ' +
+              audioBuf.duration.toFixed(2) + 's → 有效采样率按 ' + decRate + 'Hz 校正';
+          }
+        } else {
+          var mediaDur = await probeMediaDuration(seg.blob);
+          if (mediaDur && audioBuf.duration > 0) {
+            var devM = Math.abs(audioBuf.duration - mediaDur) / mediaDur;
+            if (devM > 0.03) {
+              decRate = Math.round(decRate * audioBuf.duration / mediaDur);
+              decFix = '容器 ' + mediaDur.toFixed(2) + 's / 解出 ' +
+                audioBuf.duration.toFixed(2) + 's → 有效采样率按 ' + decRate + 'Hz 校正';
+            }
           }
         }
+
         seg.pcm = audioBufferToPcm(audioBuf);
-        seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
+        seg.pcm.sampleRate = decRate;
+        if (decFix) {
+          // AudioBuffer 自带的采样率声明是错的，M4A 调度路径不能再用它
+          // （会按错误速度播放），改由 PCM 重建；PCM 同时拷贝为独立数组，
+          // 解除对 AudioBuffer 内存的依赖。
+          seg.audioBuffer = null;
+          var own = [];
+          for (var ci = 0; ci < seg.pcm.channels.length; ci++) {
+            own.push(new Float32Array(seg.pcm.channels[ci]));
+          }
+          seg.pcm.channels = own;
+          shortWarning = shortWarning ||
+            ('本机解码速度异常，已自动校正（' + decFix + '），建议试听确认');
+        } else {
+          seg.audioBuffer = audioBuf; // 保留引用：M4A 调度可直接复用
+        }
+        seg.decodeFixNote = decFix;
         seg.released = false;      // 复制片段自己解完后必须清标记，否则下次合并又全量重解一遍
         seg.warn = shortWarning; // 极短音频保留但给出试听警示；正常结果为 null
-        seg.duration = audioBuf.duration;
-        seg.sampleRate = audioBuf.sampleRate;
+        seg.duration = audioBuf.duration * (decRate / audioBuf.sampleRate);
+        seg.sampleRate = decRate;
         seg.channels = audioBuf.numberOfChannels;
-        diagSeg(seg, '平台 decodeAudioData');
+        diagSeg(seg, '平台 decodeAudioData' + (decFix ? '（速度已校正）' : ''));
         seg.decoding = false;
         if (seg.removed) return; // 解码期间被删除：不再渲染/汇报幽灵片段
         renderList();
