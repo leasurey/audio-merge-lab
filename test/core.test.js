@@ -1159,4 +1159,95 @@ test('sniffFormat: QuickTime brand 标注为 MOV', () => {
   assert.ok(/MOV/.test(info.label), 'MOV 应显式出现在格式标签里');
 });
 
+/* ---------- MP4 解封装的真实世界变体（V0.5.3 实测补充） ---------- */
+test('mp4ExtractAac: 多字节描述符长度（80 80 80 XX）+ 多条目 stsc', () => {
+  const B = (type, ...parts) => {
+    const body = Buffer.concat(parts);
+    const b = Buffer.alloc(8 + body.length);
+    b.writeUInt32BE(8 + body.length, 0);
+    b.write(type, 4, 'latin1');
+    body.copy(b, 8);
+    return b;
+  };
+  const u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0, 0); return b; };
+  const u16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16BE(v & 0xffff, 0); return b; };
+  // Apple 工具常用的"最长编码"：长度恒占 4 字节，前 3 字节高位为 1
+  const desc4 = (tag, body) => Buffer.concat([
+    Buffer.from([tag, 0x80, 0x80, 0x80, body.length & 0x7f]), body
+  ]);
+
+  const asc = Buffer.from([0x12, 0x10]);                      // AAC-LC / 44.1k / 立体声
+  const dsi = desc4(0x05, asc);
+  const dcd = desc4(0x04, Buffer.concat([
+    Buffer.from([0x40, 0x15]), Buffer.from([0, 0, 0]),
+    u32(128000), u32(128000), dsi
+  ]));
+  const esds = B('esds', Buffer.alloc(4), desc4(0x03, Buffer.concat([u16(1), Buffer.from([0]), dcd])));
+
+  // 5 帧，每帧 20 字节，内容首字节 = 帧号，便于校验映射
+  const FRAME = 20;
+  const frames = [];
+  for (let i = 0; i < 5; i++) {
+    const f = Buffer.alloc(FRAME);
+    f[0] = i; f[1] = 0xAA; f[2] = i;
+    frames.push(f);
+  }
+  // stsc 两个条目：chunk1-2 各 2 帧，chunk3 起各 1 帧 → 5 帧落在 3 个 chunk
+  const chunkFrames = [[frames[0], frames[1]], [frames[2], frames[3]], [frames[4]]];
+  const mdatPayload = Buffer.concat(chunkFrames.flat());
+
+  const mp4aBody = Buffer.concat([
+    Buffer.alloc(6), u16(1), Buffer.alloc(8),
+    u16(2), u16(16), u16(0), u16(0),
+    u32(44100 << 16), esds
+  ]);
+  const mp4a = Buffer.concat([
+    (() => { const b = Buffer.alloc(8); b.writeUInt32BE(8 + mp4aBody.length, 0); b.write('mp4a', 4, 'latin1'); return b; })(),
+    mp4aBody
+  ]);
+  const stsd = B('stsd', Buffer.alloc(4), u32(1), mp4a);
+  const stts = B('stts', Buffer.alloc(4), u32(1), u32(5), u32(1024));
+  const stsc = B('stsc', Buffer.alloc(4), u32(2),
+    u32(1), u32(2), u32(1),
+    u32(3), u32(1), u32(1));
+  const stsz = B('stsz', Buffer.alloc(4), u32(FRAME), u32(5));
+  const stco0 = B('stco', Buffer.alloc(4), u32(3), u32(0), u32(0), u32(0));
+  const stbl = B('stbl', stsd, stts, stsc, stsz, stco0);
+  const minf = B('minf', B('smhd', Buffer.alloc(4), u16(0), u16(0)), stbl);
+  const hdlr = B('hdlr', Buffer.alloc(4), u32(0), Buffer.from('soun', 'latin1'), Buffer.alloc(12));
+  const mdhd = B('mdhd', Buffer.alloc(4), u32(0), u32(0), u32(44100), u32(44100 * 5 * 1024 / 44100), u16(0), u16(0));
+  const trak = B('trak', B('mdia', mdhd, hdlr, minf));
+
+  // 先按 stco=0 组装，拿到 mdat payload 起点后回填
+  const build = (offsets) => {
+    const stco = B('stco', Buffer.alloc(4), u32(3),
+      ...offsets.map((o) => u32(o)));
+    const stbl2 = B('stbl', stsd, stts, stsc, stsz, stco);
+    const minf2 = B('minf', B('smhd', Buffer.alloc(4), u16(0), u16(0)), stbl2);
+    const trak2 = B('trak', B('mdia', mdhd, hdlr, minf2));
+    const moov = B('moov', trak2);
+    const ftyp = B('ftyp', Buffer.from('mp42', 'latin1'), u32(0));
+    const mdat = B('mdat', mdatPayload);
+    return Buffer.concat([ftyp, mdat, moov]);
+  };
+  const probe = build([0, 0, 0]);
+  const payloadBase = probe.length - (probe.length - (probe.indexOf(Buffer.from('mdat', 'latin1')) - 4 + 8));
+  // payload 起点 = ftyp 长度 + 8
+  const ftypLen = 8 + 4 + 4;
+  const base = ftypLen + 8;
+  const offs = [base, base + FRAME * 2, base + FRAME * 4];
+  const file = build(offs);
+
+  const ex = Core.mp4ExtractAac(new Uint8Array(file));
+  assert.ok(ex, '应能解析：' + (Core.mp4ExtractAac.lastReason || ''));
+  assert.strictEqual(ex.frames.length, 5, '帧数应为 5');
+  assert.strictEqual(ex.sampleRate, 44100);
+  assert.strictEqual(ex.channels, 2);
+  assert.deepStrictEqual(Array.from(ex.asc), [0x12, 0x10], 'ASC 必须从 4 字节长度的描述符中取出');
+  // 多条目 stsc 下每帧必须落在正确位置
+  for (let i = 0; i < 5; i++) {
+    assert.strictEqual(ex.frames[i][0], i, '第 ' + i + ' 帧内容错位');
+  }
+});
+
 console.log('[audio-core] 全部通过：' + passed + ' 项测试');
