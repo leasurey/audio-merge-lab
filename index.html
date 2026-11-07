@@ -2678,6 +2678,15 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
    */
   var DIAG = /[?&]diag=1/.test(location.search);
   var NO_SINK = /[?&]nosink=1/.test(location.search);
+  /* 解码上下文锁定采样率：部分安卓内核对"解码时按设备输出采样率重采样"的实现有差异，
+   * 若主 AudioContext 恰好落在 48kHz，就会多出一次不可控的重采样。
+   *   ?decoderate=48000 → 用 OfflineAudioContext(48000) 解码（48k 素材完全不重采样）
+   *   ?decoderate=44100 / ?decode44=1 → 锁定 44.1k
+   * 用于 A/B 判断"杂音是否来自解码重采样"。 */
+  var rateMatch = location.search.match(/[?&]decoderate=(\d{4,6})/);
+  var DECODE_RATE = rateMatch ? parseInt(rateMatch[1], 10)
+    : (/[?&]decode44=1/.test(location.search) ? 44100 : 0);
+  var decodeCtx = null;
   var diagSegs = [];
 
   function pcmStats(pcm) {
@@ -2750,6 +2759,7 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
     L.push('UA: ' + navigator.userAgent);
     L.push('AudioContext.sampleRate: ' + (state.audioCtx ? state.audioCtx.sampleRate : '未创建'));
     L.push('落盘: ' + (NO_SINK ? '已强制关闭（内存拼接）' : '自动选择'));
+    L.push('解码上下文: ' + (DECODE_RATE ? 'OfflineAudioContext ' + DECODE_RATE + 'Hz（开关已开启）' : '主 AudioContext'));
     L.push('');
     L.push('-- 片段（' + diagSegs.length + ' 条记录） --');
     for (var i = 0; i < diagSegs.length; i++) {
@@ -2923,6 +2933,19 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
   }
 
   function decodeAudioData(arrayBuffer) {
+    // 诊断开关：用独立的离线上下文按指定采样率解码，绕开设备主上下文的重采样
+    if (DECODE_RATE) {
+      if (!decodeCtx) {
+        var OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        try { if (OAC) decodeCtx = new OAC(1, 1, DECODE_RATE); } catch (e) { decodeCtx = null; }
+      }
+      if (decodeCtx) {
+        return new Promise(function (resolve, reject) {
+          var q = decodeCtx.decodeAudioData(arrayBuffer, resolve, reject);
+          if (q && typeof q.then === 'function') q.then(resolve, reject);
+        });
+      }
+    }
     // 同时兼容新版（Promise）与旧版（回调）API
     return new Promise(function (resolve, reject) {
       var p = state.audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
