@@ -2789,26 +2789,96 @@ window.__MP3DEC_B64 = "LyogQ29weXJpZ2h0IDIwMjEtMjAyNSBFdGhhbiBIYWxzYWxsLiBUaGlzI
       if (d.fix) L.push('    ★ 速度校正: ' + d.fix);
     }
 
-    var box = document.getElementById('diagBox');
-    if (!box) {
-      box = document.createElement('pre');
-      box.id = 'diagBox';
-      box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;margin:0;' +
-        'max-height:55vh;overflow:auto;padding:12px;font:12px/1.5 monospace;' +
-        'background:rgba(20,20,22,.96);color:#e8e8ea;white-space:pre-wrap;word-break:break-all;' +
-        'border-top:2px solid #4f8cff;-webkit-user-select:text;user-select:text';
-      box.addEventListener('click', function () {
-        try {
-          var r = document.createRange();
-          r.selectNodeContents(box);
-          var s = window.getSelection();
-          s.removeAllRanges();
-          s.addRange(r);
-        } catch (e) { /* 忽略 */ }
-      });
-      document.body.appendChild(box);
+    ensureDiagEls();
+    diagPre.textContent = L.join('\n');
+    diagBtn.textContent = '📋 诊断' + (diagOpen ? ' ▼' : ' ▲');
+  }
+
+  /* 诊断面板 UI：默认收起为一个右下角小按钮，展开时才显示内容。
+   * 第一版固定铺满底部，把「合并」按钮挡住了（雷电实测反馈），故改为可折叠悬浮层。 */
+  var diagWrap = null, diagPre = null, diagBtn = null, diagOpen = false;
+
+  function diagCopy() {
+    var text = diagPre.textContent;
+    var done = function () {
+      diagBtn.textContent = '✅ 已复制';
+      setTimeout(function () {
+        diagBtn.textContent = '📋 诊断' + (diagOpen ? ' ▼' : ' ▲');
+      }, 1500);
+    };
+    var fallback = function () {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { /* 忽略 */ }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
     }
-    box.textContent = L.join('\n');
+  }
+
+  function ensureDiagEls() {
+    if (diagWrap) return;
+    diagWrap = document.createElement('div');
+    diagWrap.id = 'diagBox';
+    diagWrap.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;display:none;' +
+      'background:rgba(20,20,22,.97);color:#e8e8ea;border-top:2px solid #4f8cff';
+    var bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 12px;' +
+      'border-bottom:1px solid rgba(255,255,255,.15);font:13px/1.4 sans-serif';
+    var title = document.createElement('span');
+    title.textContent = '诊断报告（点文字可全选）';
+    title.style.cssText = 'flex:1;color:#9fb4d8';
+    var btnCopy = document.createElement('button');
+    btnCopy.textContent = '复制全部';
+    btnCopy.style.cssText = 'padding:4px 10px;font-size:13px;background:#2f6fe4;color:#fff;' +
+      'border:0;border-radius:6px';
+    btnCopy.onclick = diagCopy;
+    var btnHide = document.createElement('button');
+    btnHide.textContent = '收起';
+    btnHide.style.cssText = 'padding:4px 10px;font-size:13px;background:#444;color:#fff;' +
+      'border:0;border-radius:6px';
+    btnHide.onclick = function () { toggleDiag(false); };
+    bar.appendChild(title);
+    bar.appendChild(btnCopy);
+    bar.appendChild(btnHide);
+
+    diagPre = document.createElement('pre');
+    diagPre.style.cssText = 'margin:0;max-height:48vh;overflow:auto;padding:10px 12px 16px;' +
+      'font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-all;' +
+      '-webkit-user-select:text;user-select:text';
+    diagPre.addEventListener('click', function () {
+      try {
+        var r = document.createRange();
+        r.selectNodeContents(diagPre);
+        var s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      } catch (e) { /* 忽略 */ }
+    });
+    diagWrap.appendChild(bar);
+    diagWrap.appendChild(diagPre);
+    document.body.appendChild(diagWrap);
+
+    diagBtn = document.createElement('button');
+    diagBtn.id = 'diagToggle';
+    diagBtn.textContent = '📋 诊断 ▲';
+    diagBtn.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:100000;' +
+      'padding:8px 12px;font-size:13px;background:rgba(20,20,22,.92);color:#e8e8ea;' +
+      'border:1px solid #4f8cff;border-radius:18px';
+    diagBtn.onclick = function () { toggleDiag(!diagOpen); };
+    document.body.appendChild(diagBtn);
+  }
+
+  function toggleDiag(open) {
+    diagOpen = !!open;
+    diagWrap.style.display = diagOpen ? 'block' : 'none';
+    diagBtn.textContent = '📋 诊断' + (diagOpen ? ' ▼' : ' ▲');
   }
 
   function nowStamp() {
