@@ -28,6 +28,7 @@ const html = read('index.template.html');
 const app = read('src/app.js');
 const css = read('src/styles.css');
 const guard = read('src/boot-guard.js');
+const hint = read('src/browser-hint.js');
 const sw = read('src/sw.js');
 const serve = read('tools/serve.js');
 const push = read('tools/github-push.js');
@@ -36,8 +37,9 @@ const pkg = JSON.parse(read('package.json'));
 console.log('[ui/build] 静态契约检查开始');
 
 /* ---------- 1. 构建占位符与 DOM 契约 ---------- */
-test('模板 6 个构建占位符存在且唯一', () => {
-  ['/*GUARD*/', '/*VENDOR*/', '/*MP3DEC*/', '/*STYLES*/', '/*CORE*/', '/*APP*/'].forEach((t) => {
+test('模板 8 个构建占位符存在且唯一', () => {
+  ['/*GUARD*/', '/*HINT*/', '/*VENDOR*/', '/*MP3DEC*/', '/*AACDEC*/',
+    '/*STYLES*/', '/*CORE*/', '/*APP*/'].forEach((t) => {
     assert.strictEqual(html.split(t).length - 1, 1, t + ' 应恰好出现一次');
   });
 });
@@ -106,7 +108,8 @@ test('CSS 花括号配对且不含会提前闭合标签的序列', () => {
 test('dist 产物存在且无残留占位符', () => {
   assert.ok(exists('dist/index.html'), '缺少 dist/index.html，请先运行 node tools/build.js');
   const out = read('dist/index.html');
-  ['/*GUARD*/', '/*VENDOR*/', '/*MP3DEC*/', '/*STYLES*/', '/*CORE*/', '/*APP*/', '__CACHE_VERSION__']
+  ['/*GUARD*/', '/*HINT*/', '/*VENDOR*/', '/*MP3DEC*/', '/*AACDEC*/', '/*STYLES*/',
+    '/*CORE*/', '/*APP*/', '__CACHE_VERSION__']
     .forEach((t) => assert.ok(!out.includes(t), '产物残留 ' + t));
   assert.ok(!out.includes('\u0000'), '产物含 NUL');
 });
@@ -281,6 +284,60 @@ test('mp4/mov 内置优先解码：AAC 解封装 → 切片 → 回退平台（V
   assert.ok(app.includes('for (var att = 0; !preFb && att < MAX_ATTEMPTS; att++)'),
     '内置成功时不得再走平台解码/重试');
   assert.ok(app.includes('var fb = preFb'), '降级链应复用已解好的结果，避免重复解码');
+});
+
+/* ---------- 5. 微信 / QQ 内置浏览器引导（V0.5.4 待发布） ---------- */
+test('四个页面都接入引导脚本，构建产物内联后无残留', () => {
+  ['index.template.html', 'guide.html', 'convert.html', 'compat.html'].forEach((p) => {
+    assert.strictEqual(read(p).split('/*HINT*/').length - 1, 1, p + ' 应恰好一个提示占位符');
+  });
+  ['dist/index.html', 'dist/guide.html', 'dist/convert.html', 'dist/compat.html'].forEach((p) => {
+    const out = read(p);
+    assert.ok(out.includes('amlBrowserHint'), p + ' 未内联引导脚本');
+    assert.ok(!out.includes('/*HINT*/'), p + ' 残留占位符');
+  });
+  assert.ok(read('tools/build.js').includes("'src/browser-hint.js'"), '构建链需内联该脚本');
+});
+
+test('引导脚本保持 ES5，且不含会提前闭合标签的序列', () => {
+  [/=>/, /\bconst\s/, /\blet\s/, /`/].forEach((bad) => {
+    assert.ok(!bad.test(hint), '引导脚本不能含 ES6+ 语法 ' + bad);
+  });
+  ['</script', '</style', '<script'].forEach((s) => {
+    assert.ok(!hint.toLowerCase().includes(s), '内联脚本不能含 ' + s);
+  });
+});
+
+test('UA 判定覆盖微信 / 企业微信 / QQ 内置，排除独立 QQ 浏览器', () => {
+  ['MicroMessenger', 'wxwork', 'V1_AND_SQ_', 'QQ\\/', 'MQQBrowser|QQBrowser',
+    'if (/MQQBrowser|QQBrowser/i.test(ua)) inQQ = false'].forEach((s) => {
+    assert.ok(hint.includes(s), '缺少检测规则 ' + s);
+  });
+});
+
+test('提示说明原因与操作步骤，位于文档流且不阻断使用', () => {
+  ['请在浏览器中打开', '在浏览器中打开', '文件选取、录音与音频解码',
+    '复制页面链接', '仍在此页使用', '手机自带浏览器', '手机自带应用商店',
+    'Microsoft Edge', 'Google Chrome', '官方渠道'].forEach((s) => {
+    assert.ok(hint.includes(s), '缺少文案 ' + s);
+  });
+  assert.ok(hint.includes("document.body.insertBefore(build(), document.body.firstChild)"),
+    '横幅应插在文档流顶部，不做全屏遮罩');
+  assert.ok(hint.includes("role', 'status"), '提示用状态语义，不打断读屏');
+});
+
+test('复制有降级通道，关闭按会话记忆，预览参数不进复制的链接', () => {
+  ['navigator.clipboard', 'legacyCopy', 'execCommand(', 'showUrl',
+    'sessionStorage', 'amlhint=1', 'pageUrl', '/^amlhint=1$/'].forEach((s) => {
+    assert.ok(hint.includes(s), '缺少 ' + s);
+  });
+});
+
+test('横幅样式共用语义变量，明暗两套兜底与 44px 点击区', () => {
+  assert.ok(hint.includes('var(--card,#ffffff)') && hint.includes('var(--card,#1c1c1e)'));
+  assert.ok(hint.includes('prefers-color-scheme: dark'));
+  assert.ok(hint.includes('min-height:44px'));
+  assert.ok(hint.includes('var(--font,'), '字体沿用页面字体栈');
 });
 
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

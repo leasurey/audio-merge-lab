@@ -37,6 +37,7 @@ const aacdecB64 = Buffer.from(aacdecSrc, 'utf8').toString('base64');
 
 const inject = [
   ['/*GUARD*/', read('src/boot-guard.js')],
+  ['/*HINT*/', read('src/browser-hint.js')],
   ['/*VENDOR*/', read('src/vendor/lame.min.js')],
   ['/*MP3DEC*/', 'window.__MP3DEC_B64 = "' + mp3decB64 + '";'],
   ['/*AACDEC*/', 'window.__AACDEC_B64 = "' + aacdecB64 + '";'],
@@ -62,6 +63,7 @@ if (leftover.length > 0) {
  * 且只检查两个 vendor，自有源码与 CSS 原文也会被内联，必须一并覆盖。 */
 const inlinedSources = [
   'src/boot-guard.js',
+  'src/browser-hint.js',
   'src/vendor/lame.min.js',
   'src/vendor/mpg123-decoder.min.js',
   'src/vendor/aac-decoder.min.js',
@@ -95,11 +97,14 @@ const noticeBlock = (noticesText + '\n\n' + licenseText)
 if (!html.includes('</head>')) throw new Error('模板中未找到 </head>，无法内联许可声明');
 html = html.replace('</head>', () =>
   '\n<!-- Audio Merge Lab · 第三方组件许可声明（随产物分发）\n' + noticeBlock + '\n-->\n</head>');
-// 启动守卫必须保持纯 ES5：它要在旧内核里执行（旧内核解析不了 app.js 的 ES2017 语法）
-const guardSrc = read('src/boot-guard.js');
-for (const bad of [/=>/, /\bconst\s/, /\blet\s/, /`/]) {
-  if (bad.test(guardSrc)) {
-    throw new Error('boot-guard.js 含 ES6+ 语法 ' + bad + '（必须保持 ES5）');
+// 兜底脚本必须保持纯 ES5：它们要在旧内核里执行（旧内核解析不了 app.js 的 ES2017 语法），
+// 而微信/QQ 内置浏览器恰好最可能使用旧内核，提示本身不能先倒下。
+for (const file of ['src/boot-guard.js', 'src/browser-hint.js']) {
+  const src = read(file);
+  for (const bad of [/=>/, /\bconst\s/, /\blet\s/, /`/]) {
+    if (bad.test(src)) {
+      throw new Error(file + ' 含 ES6+ 语法 ' + bad + '（必须保持 ES5）');
+    }
   }
 }
 
@@ -112,12 +117,20 @@ fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webm
 /* 子页面：注入共享文档样式（src/doc.css）后写出。
  * 三个页面共用一套语义色/字号/圆角，避免各自维护一份内联样式而逐渐跑偏。 */
 const docCss = read('src/doc.css');
+const hintSrc = read('src/browser-hint.js');
 for (const page of ['compat.html', 'guide.html', 'convert.html']) {
   const src = read(page);
-  if (!src.includes('/*DOC*/')) {
-    throw new Error(page + ' 缺少 /*DOC*/ 样式占位符');
+  for (const token of ['/*DOC*/', '/*HINT*/']) {
+    if (!src.includes(token)) {
+      throw new Error(page + ' 缺少 ' + token + ' 占位符');
+    }
   }
-  const out = src.replace('/*DOC*/', () => docCss);
+  const out = src
+    .replace('/*DOC*/', () => docCss)
+    .replace('/*HINT*/', () => hintSrc);
+  if (out.includes('/*DOC*/') || out.includes('/*HINT*/')) {
+    throw new Error(page + ' 占位符替换不完整');
+  }
   if (out.indexOf('\u0000') !== -1) throw new Error(page + ' 含 NUL 字节');
   fs.writeFileSync(dist(page), out);
 }
