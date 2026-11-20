@@ -101,7 +101,9 @@ html = html.replace('</head>', () =>
 // 而微信/QQ 内置浏览器恰好最可能使用旧内核，提示本身不能先倒下。
 for (const file of ['src/boot-guard.js', 'src/browser-hint.js']) {
   const src = read(file);
-  for (const bad of [/=>/, /\bconst\s/, /\blet\s/, /`/]) {
+  // 覆盖更多 ES6+ 语法：class / for...of / 解构 / 展开 / async 等
+  for (const bad of [/=>/, /\bconst\s/, /\blet\s/, /`/, /\bclass\s/, /\bfor\s*\([^)]*\bof\b/,
+                     /\basync\s+function\b/, /\bawait\s/, /\.\.\./]) {
     if (bad.test(src)) {
       throw new Error(file + ' 含 ES6+ 语法 ' + bad + '（必须保持 ES5）');
     }
@@ -118,6 +120,12 @@ fs.copyFileSync(path.join(root, 'src/manifest.webmanifest'), dist('manifest.webm
  * 三个页面共用一套语义色/字号/圆角，避免各自维护一份内联样式而逐渐跑偏。 */
 const docCss = read('src/doc.css');
 const hintSrc = read('src/browser-hint.js');
+// 注入源若含闭合序列会让子页面的 <style>/<script> 提前结束。
+// 只校验注入源本身，不校验整页（页面自身的合法 script 标签不应误报）。
+for (const seq of ['</style', '<script', '</script']) {
+  if (docCss.toLowerCase().includes(seq)) throw new Error('src/doc.css 含 ' + seq);
+  if (hintSrc.toLowerCase().includes(seq)) throw new Error('src/browser-hint.js 含 ' + seq);
+}
 for (const page of ['compat.html', 'guide.html', 'convert.html']) {
   const src = read(page);
   for (const token of ['/*DOC*/', '/*HINT*/']) {
@@ -147,7 +155,7 @@ let swSrc = read('src/sw.js');
 if (!swSrc.includes('__CACHE_VERSION__')) {
   throw new Error('sw.js 中未找到 __CACHE_VERSION__ 占位符');
 }
-swSrc = swSrc.replaceAll('__CACHE_VERSION__', 'audio-merge-lab-v' + appVersion);
+swSrc = swSrc.split('__CACHE_VERSION__').join('audio-merge-lab-v' + appVersion);
 if (swSrc.includes('__CACHE_VERSION__')) {
   throw new Error('sw.js 缓存名注入不完整');
 }

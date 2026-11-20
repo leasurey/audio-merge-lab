@@ -155,16 +155,24 @@
       <span class="step-badge step-badge-done" aria-hidden="true">✓</span>
       <div class="card-head-text">
         <h2>合并完成</h2>
-        <p class="card-desc">试听、分享，或保存到「文件」App</p>
+        <p class="card-desc">试听、保存到设备，或分享</p>
       </div>
     </div>
     <div class="card-body">
       <audio id="resultAudio" controls preload="none" hidden></audio>
       <p id="resultMeta"></p>
+      <div class="name-row">
+        <label for="resultName">文件名</label>
+        <input type="text" id="resultName" maxlength="80" autocomplete="off" spellcheck="false" aria-label="自定义保存文件名，不含扩展名" />
+        <span class="name-ext" id="resultNameExt"></span>
+      </div>
+      <p class="hint" id="nameHint">默认按当日日期命名；可改成自己需要的名称，扩展名自动添加。</p>
       <div class="btn-row">
         <button class="btn ghost" id="btnPlayResult" type="button">▶ 试听结果</button>
-        <button class="btn primary btn-lg" id="btnShare" type="button">分享 / 下载</button>
+        <button class="btn primary btn-lg" id="btnDownload" type="button">下载到设备</button>
+        <button class="btn ghost" id="btnShare" type="button">分享</button>
       </div>
+      <p class="hint" id="downloadHint">下载由浏览器保存到设备，可在「下载」目录找到后转发到微信。若点击后直接播放，请长按结果音频另存，或使用系统浏览器打开本页。</p>
       <!-- 保存到「文件」App：仅当检测到局域网下载服务（tools/serve.js）时显示。
            iOS 上系统播放器没有保存入口，走服务端直链 + Content-Disposition 才可靠 -->
       <div id="saveBox" hidden>

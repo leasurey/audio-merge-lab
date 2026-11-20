@@ -64,8 +64,35 @@ test('关键交互结构契约（label[for] / 格式按钮 / 结果区）', () =
     'iOS WKWebView 需要 label[for] 激活 file input');
   assert.match(html, /data-fmt="mp3"/);
   assert.match(html, /id="bitrateSel"/);
-  ['fileInputAny', 'progressWrap', 'status', 'resultBox', 'actionBar', 'btnMerge', 'saveLink']
+  ['fileInputAny', 'progressWrap', 'status', 'resultBox', 'actionBar', 'btnMerge', 'saveLink',
+    'btnDownload', 'downloadHint']
     .forEach((id) => assert.ok(html.includes('id="' + id + '"'), '缺少 #' + id));
+});
+
+test('结果区「下载到设备」与「分享」是独立按钮，Android 不误入原生分享', () => {
+  assert.match(html, /id="btnDownload"[^>]*>下载到设备<\/button>/,
+    '下载应有独立按钮，不能只靠一个"分享 / 下载"混合按钮');
+  assert.ok(!/id="btnShare"[^>]*>[^<]*下载/.test(html),
+    '分享按钮文案不应再含"下载"，避免与下载按钮语义混淆');
+  // Android 上 navigator.share 被显式排除，避免系统面板把 audio/* 当歌曲弹播放器
+  assert.match(app, /navigator\.share\s*&&\s*!isAndroidDevice\(\)/,
+    '系统分享必须在 Android 上跳过');
+  assert.match(app, /function isAndroidDevice\(\)[\s\S]{0,120}Android/i,
+    '需要有 Android UA 判定');
+  assert.match(app, /function downloadToDevice\(\)/, '需要独立下载函数');
+  assert.match(app, /\$\('btnDownload'\)\.addEventListener\('click',\s*downloadToDevice\)/,
+    '下载按钮需绑定到 downloadToDevice');
+  assert.match(app, /\$\('btnShare'\)\.hidden\s*=\s*isAndroidDevice\(\)/,
+    'Android 上应隐藏分享按钮');
+});
+
+test('下载链接不得用 target=_blank（Android 会新开标签页播放而非保存）', () => {
+  assert.match(app, /a\.removeAttribute\('target'\)/,
+    'downloadViaAnchor 必须去掉 target，否则 Android 会触发播放器');
+  assert.match(app, /if \(isAndroidDevice\(\)\) link\.removeAttribute\('target'\)/,
+    'showSaveLink 在 Android 上也需移除 target');
+  assert.ok(!/downloadViaAnchor[\s\S]{0,200}window\.open/.test(app),
+    '下载通道不得调用 window.open');
 });
 
 /* ---------- 2. 深浅色与布局（含用户反馈的码率下拉同色问题） ---------- */
@@ -228,6 +255,29 @@ test('OPFS 同步写入必须处理部分写入（否则安卓上数据整体错
   assert.ok(app.includes("if (!n || n <= 0)"), '写入 0 字节必须报错，不能静默丢数据');
 });
 
+test('两条合并路径都要逐段释放 PCM（M4A 不得常驻解码数据）', () => {
+  // WAV/MP3：streamMerge 每段消费后释放
+  const sm = app.slice(app.indexOf('async function streamMerge('),
+    app.indexOf('function encodeM4AScheduled('));
+  assert.ok(sm.includes('releaseSegmentPcm(seg)'), 'streamMerge 缺少逐段释放');
+
+  // M4A：实时调度路径此前完全没有释放，连续合并时解码数据常驻到删片段/刷新
+  const m4 = app.slice(app.indexOf('function encodeM4AScheduled('),
+    app.indexOf('async function doMerge()'));
+  assert.ok(m4.includes('releaseSegmentPcm(seg)'),
+    'M4A 调度路径必须释放已消费片段的 PCM');
+
+  // 释放时机必须在 segmentBuffer 之后：buf 已生成并交给 WebAudio 才能断开引用，
+  // 否则 src.buffer 拿到的是已失效数据。
+  const p = m4.indexOf('releaseSegmentPcm(seg)');
+  const b = m4.indexOf('var buf = segmentBuffer(seg)');
+  assert.ok(b >= 0 && p > b, 'M4A 释放必须发生在 segmentBuffer 生成缓冲之后');
+
+  // 共享函数本身只断引用、保留 blob 与元数据，供 ensureAllDecoded 重建
+  assert.ok(app.includes('seg.pcm = null;') && app.includes('seg.released = true'),
+    'releaseSegmentPcm 必须保留可重建性');
+});
+
 test('容器声明与内部编码不符时，自动提取内部 MP3 切片（V0.5.3）', () => {
   const core = read('src/audio-core.js');
   assert.ok(core.includes('function mp3ExtractStream'), '核心层缺少 MPEG 帧提取函数');
@@ -338,6 +388,84 @@ test('横幅样式共用语义变量，明暗两套兜底与 44px 点击区', ()
   assert.ok(hint.includes('prefers-color-scheme: dark'));
   assert.ok(hint.includes('min-height:44px'));
   assert.ok(hint.includes('var(--font,'), '字体沿用页面字体栈');
+});
+
+/* ---------- 8. 全面审查修复的回归契约 ---------- */
+test('合并中禁止入列新片段，且 OPFS 初始化在 try 内', () => {
+  const eq = app.slice(app.indexOf('function enqueueFiles('), app.indexOf('function pumpQueue('));
+  assert.ok(eq.includes('if (state.busy)'), 'enqueueFiles 缺少 busy 守卫');
+  const busy = app.slice(app.indexOf('function setBusy('), app.indexOf('function decodingCount('));
+  assert.ok(busy.includes('btnImportAny') && busy.includes("$('fileInputAny').disabled"),
+    'setBusy 必须同时锁住兼容模式入口');
+  const sm = app.slice(app.indexOf('async function streamMerge('), app.indexOf('function encodeM4AScheduled('));
+  const tryPos = sm.indexOf('try {');
+  const ratePos = sm.indexOf('pickTargetRate(segs.map');
+  assert.ok(tryPos >= 0 && ratePos > tryPos,
+    '依赖 seg.pcm 的初始化必须在 try 内，否则 sink.abort 不执行');
+});
+
+test('MP4 解封装计数有上界，恶意文件不能卡死主线程', () => {
+  const core = read('src/audio-core.js');
+  assert.ok(core.includes('frameCount > bytes.length'), 'stsz 帧数上界缺失');
+  assert.ok(core.includes('cnt > room'), 'stco/co64 计数上界缺失');
+  assert.ok(core.includes('scCount > Math.floor'), 'stsc 计数上界缺失');
+  assert.ok(core.includes('itemSize === 4 ? u32'), 'fullEntries 的 itemSize 分支错误未修');
+  assert.ok(core.includes("num('gapSec', 0, 3600)"), 'gapSec 缺少上界');
+});
+
+test('M4A 有墙钟兜底且按格式选择 MIME', () => {
+  const m4 = app.slice(app.indexOf('function encodeM4AScheduled('), app.indexOf('async function doMerge()'));
+  assert.ok(m4.includes('wallStart') && m4.includes('wallLimit'),
+    'M4A 进度必须加真实时间兜底，防止 AudioContext 挂起时录制不停');
+  const mime = app.slice(app.indexOf('function mimeCandidates('), app.indexOf('function pickMimeType('));
+  assert.ok(mime.indexOf("state.format === 'm4a'") < mime.indexOf('isIOSDevice()'),
+    'M4A 输出时 mp4 MIME 必须优先于 webm');
+  assert.ok(app.includes('if (state.busy) return; // 合并中试听会覆盖进度/取消提示'),
+    '试听缺少 busy 守卫');
+});
+
+test('文档在线链接带 sharecode，按钮文案无旧名残留', () => {
+  const rd = read('README.md'), use = read('使用说明.md'), gd = read('guide.html');
+  assert.ok(!rd.includes('host/)') && rd.includes('sharecode=D4YMBOSNDJ'),
+    'README 在线链接必须带 sharecode');
+  assert.ok(use.includes('sharecode=D4YMBOSNDJ'), '使用说明在线链接必须带 sharecode');
+  assert.ok(!/分享 \/ 下载/.test(gd), 'guide.html 仍含旧按钮名');
+  assert.ok(!app.includes('请再点一次「分享 / 下载」'), 'app.js 仍含旧按钮名');
+});
+
+test('构建与服务层修补：清单完整、错误不外泄、ES5 检查增强', () => {
+  const push = read('tools/github-push.js'), serve = read('tools/serve.js'), build = read('tools/build.js');
+  for (const f of ['browser-hint.js', 'doc.css', 'aac-decoder.min.js', 'test/ui.test.js']) {
+    assert.ok(push.includes(f), 'github-push 回退清单缺少 ' + f);
+  }
+  assert.ok(serve.includes("写入失败（服务端已记录详细错误）"), '写入错误仍外泄内部信息');
+  assert.ok(serve.includes('req.setTimeout(120000)'), '服务缺少连接超时');
+  assert.ok(build.includes('\\bclass\\s'), 'ES5 检查未增强');
+  assert.ok(!build.includes('replaceAll'), 'build.js 仍依赖 replaceAll（需 Node>=15）');
+});
+
+
+/* ---------- 9. 结果重命名契约 ---------- */
+test('默认文件名为当日日期，不含 merge 等字样', () => {
+  assert.ok(app.includes('function todayDate()'), '缺少当日日期函数');
+  assert.ok(/return d\.getFullYear\(\) \+ '-' \+ p\(d\.getMonth\(\) \+ 1\)/.test(app),
+    '日期格式必须是 YYYY-MM-DD');
+  assert.ok(app.includes('var base = custom || todayDate();'), '默认名应取当日日期');
+  assert.ok(!/merged-[\s\S]{0,20}nowStamp/.test(app), '仍存在 merged- 前缀的导出文件名');
+  // 导出通道必须统一使用统一入口
+  // 函数定义 1 处 + 下载 / 分享 / 保存链接调用 3 处
+  assert.strictEqual((app.match(/resultFileName\(ext\)/g) || []).length, 4,
+    '下载 / 分享 / 保存链接三处都应使用统一命名函数');
+});
+
+test('结果区有重命名输入框，且文件名过滤非法字符与双扩展名', () => {
+  assert.ok(html.includes('id="resultName"'), '模板缺少重命名输入框');
+  assert.ok(html.includes('id="resultNameExt"'), '模板缺少扩展名提示');
+  assert.ok(app.includes("base.replace(/[\\\\/:*?\"<>|\\x00-\\x1f]/g, '_')"),
+    '未过滤文件系统非法字符');
+  assert.ok(app.includes("\\.(wav|mp3|m4a|webm|ogg|flac)$"), '未剥离用户输入的扩展名');
+  assert.ok(app.includes("$('resultName').value = todayDate();"), '合并完成未复位为当日日期');
+  assert.ok(css.includes('.name-row input'), '缺少重命名输入框样式');
 });
 
 console.log('[ui/build] 全部通过：' + passed + ' 项检查');

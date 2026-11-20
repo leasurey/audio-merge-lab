@@ -2,7 +2,7 @@
 
 在浏览器中把多段录音合并为一个音频文件。无需安装，文件不上传。
 
-[在线使用](https://audio-merge-lab.app.workbuddy.host/) · [使用指南](guide.html) · [格式转换](convert.html) · [兼容性自检](compat.html) · [更新日志](CHANGELOG.md)
+[在线使用](https://audio-merge-lab.app.workbuddy.host/?sharecode=D4YMBOSNDJ) · [备用入口](https://leasurey.github.io/audio-merge-lab/) · [使用指南](guide.html) · [格式转换](convert.html) · [兼容性自检](compat.html) · [更新日志](CHANGELOG.md)
 
 ## 概览
 
@@ -18,7 +18,7 @@
 2. 按住片段左侧的 ⠿ 拖移，调整先后顺序。
 3. 选取输出格式，点按底部的「合并」。
 
-合并完成后，点按「分享 / 下载」保存或共享文件。在 iPhone 上选取「存储到文件」，可将结果保存到「文件」App。
+合并完成后可修改「文件名」输入框：默认仅按当日日期命名（YYYY-MM-DD），例如 2026-11-20.mp3；也可填入自定义名称，扩展名会自动添加。点按「下载到设备」保存，下载完成后到系统「下载」目录找到它，即可转发到微信。安卓端不显示「分享」按钮：系统分享面板会把音频当成歌曲，列出音乐播放器而不是文件保存目标，也无法把文件直接送进微信。iPhone 与桌面端另可用「分享」按钮，在 iPhone 上选取「存储到文件」即可保存到「文件」App。
 
 片段左侧的按钮依次用于试听、裁剪、复制与移除。裁剪可指定起止时间，只合并保留的部分。
 
@@ -51,7 +51,7 @@
 | Chrome、Edge、Firefox、Samsung Internet | 无 | 基准平台 |
 | 夸克 | 自有网络栈偶发无法打开页面 | 备用入口与自检页 |
 | UC、QQ、微信内置浏览器（X5） | 文件类型过滤异常；旧设备内核低至 Chromium 53 | 引导至系统浏览器、兼容模式导入、启动守卫提示 |
-| 华为、荣耀、vivo、小米、OPPO、百度、360 | 文件类型过滤偶发异常，下载入口存在差异 | 兼容模式导入、共享面板兜底 |
+| 华为、荣耀、vivo、小米、OPPO、百度、360 | 文件类型过滤偶发异常；原生分享面板会把音频当歌曲 | 兼容模式导入；安卓端改用「下载到设备」保存到「下载」目录 |
 
 上表按公开内核信息与社区反馈整理，未逐台设备验证。要确认某台设备的实际能力，用该设备打开[兼容性自检](compat.html)，页面会生成一份报告。
 
@@ -195,4 +195,4 @@ npm run cap:sync && npm run cap:open:android
 
 ---
 
-作者 k · [B 站主页](https://space.bilibili.com/527557440) · [在线使用](https://audio-merge-lab.app.workbuddy.host/)
+作者 k · [B 站主页](https://space.bilibili.com/527557440) · [在线使用](https://audio-merge-lab.app.workbuddy.host/?sharecode=D4YMBOSNDJ)

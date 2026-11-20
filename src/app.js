@@ -122,6 +122,7 @@
   function isAndroid() {
     return /Android/i.test(navigator.userAgent || '');
   }
+  // isAndroidDevice() 在文件后段定义，语义相同；此处保留 isAndroid 供后台调度使用。
 
   function nextFrame() {
     return new Promise(function (r) {
@@ -397,6 +398,31 @@
       '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
   }
 
+  /** 当日日期（中国标准 YYYY-MM-DD，本地时区） */
+  function todayDate() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  /**
+   * 结果文件名：默认仅为当日日期；用户在结果区输入自定义名时采用之。
+   * 统一入口，避免下载 / 分享 / 保存链接三处命名不一致。
+   * 过滤文件系统非法字符，剥掉用户自带的扩展名，防止出现双扩展名。
+   */
+  function resultFileName(ext) {
+    var el = $('resultName');
+    var custom = el ? String(el.value || '').trim() : '';
+    var base = custom || todayDate();
+    // Windows / Android 通用非法字符；控制字符一并去掉
+    base = base.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
+    // 用户填了扩展名时剥掉（大小写不敏感），扩展名由实际输出格式决定
+    base = base.replace(/\.(wav|mp3|m4a|webm|ogg|flac)$/i, '');
+    base = base.trim();
+    if (!base || base === '.' || base === '..') base = todayDate();
+    return base + '.' + (ext || 'wav');
+  }
+
   function base64ToArrayBuffer(b64) {
     var bin = atob(b64);
     var buf = new ArrayBuffer(bin.length);
@@ -458,6 +484,10 @@
   function setBusy(busy) {
     state.busy = busy;
     $('btnImport').classList.toggle('disabled', busy);
+    // 兼容模式入口也必须锁：它是 label[for=fileInputAny]，不加 disabled 时
+    // 合并中仍可选文件并入列，绕过主按钮的 pointer-events:none 保护
+    $('btnImportAny').classList.toggle('disabled', busy);
+    $('fileInputAny').disabled = busy;
     $('btnRecord').disabled = busy;
     // 合并中禁止改动输出格式/位率：streamMerge 的头部与编码器按进入时格式
     // 初始化一次，中途切换会崩在 enc=null 或产出头部与数据不符的损坏文件。
@@ -683,6 +713,13 @@
    * 然后按队列顺序解码，控制内存峰值。
    */
   function enqueueFiles(files, expectDurations) {
+    /* 合并进行中禁止入列：doMerge/streamMerge 持有 state.segments 的 live 引用，
+     * 此时 push 一个 pcm=null 的新段会让 streamMerge 读 s.pcm.sampleRate 抛错，
+     * 且该行在 try 之外，OPFS 半成品与句柄不会被 abort 清理。 */
+    if (state.busy) {
+      setStatus('合并进行中：请先取消合并，再导入新文件', true);
+      return;
+    }
     var added = [];
     Array.prototype.forEach.call(files || [], function (file, i) {
       if (!file) return;
@@ -1291,6 +1328,7 @@
   }
 
   function toggleSegPlayback(id) {
+    if (state.busy) return; // 合并中试听会覆盖进度/取消提示
     var player = $('segPlayer');
     if (state.playingId === id) {
       stopSegPlayback();
@@ -1645,6 +1683,17 @@
    *   - iOS：只能 mp4（Safari 不支持 webm 录制），保持原顺序
    */
   function mimeCandidates() {
+    /* M4A 输出时必须把 mp4 放首位：安卓的 isTypeSupported 往往 webm 与 mp4
+     * 同时为真，若沿用 webm 优先，选了 M4A 实际录成 WebM，
+     * 成品扩展名与用户选择不符。 */
+    if (state.format === 'm4a') {
+      return [
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm'
+      ];
+    }
     if (isIOSDevice()) {
       return [
         'audio/mp4;codecs=mp4a.40.2',
@@ -1949,29 +1998,6 @@
   async function streamMerge(token, sink) {
     var segs = state.segments;
     var gapSec = parseFloat($('gapRange').value) || 0;
-    var targetRate = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
-    // 剪切范围（秒 → 源帧）随片段传入：核心层按源区间零拷贝读取，不生成裁剪副本
-    var plan = AudioCore.planMerge(
-      segs.map(function (s) {
-        var t = segTrimFrames(s);
-        return { name: s.name, pcm: s.pcm, trimStart: t.start, trimEnd: t.end };
-      }),
-      { targetSampleRate: targetRate, targetChannels: mergeTargetChannels(), gapSec: gapSec, fadeMs: 8 }
-    );
-
-    // 归一化全局增益（与"先拼接再归一化"等价：拼接后峰值 = 各段淡变后峰值的最大者）
-    var gain = 1;
-    if ($('normalizeChk').checked) {
-      var peak = 0;
-      plan.parts.forEach(function (p) {
-        peak = Math.max(peak, AudioCore.segmentPeakAfterFade(
-          segs[p.index].pcm, plan.targetSampleRate, plan.targetChannels, 8,
-          p.trimStart, p.trimEnd
-        ));
-      });
-      if (peak > 0 && isFinite(peak)) gain = Math.min(0.89 / peak, 8);
-    }
-
     var parts = []; // 回落模式的内存块
     function write(bytes) {
       if (sink) return sink.write(bytes);
@@ -1983,6 +2009,31 @@
     }
 
     try {
+      /* 所有依赖 seg.pcm 的初始化都必须在 try 内：任一片段在合并开始后被
+       * 置空（删除/释放/异常），错误都要走 catch 里的 sink.abort() 清理。 */
+      var targetRate = AudioCore.pickTargetRate(segs.map(function (s) { return s.pcm.sampleRate; }));
+      // 剪切范围（秒 → 源帧）随片段传入：核心层按源区间零拷贝读取，不生成裁剪副本
+      var plan = AudioCore.planMerge(
+        segs.map(function (s) {
+          var t = segTrimFrames(s);
+          return { name: s.name, pcm: s.pcm, trimStart: t.start, trimEnd: t.end };
+        }),
+        { targetSampleRate: targetRate, targetChannels: mergeTargetChannels(), gapSec: gapSec, fadeMs: 8 }
+      );
+
+      // 归一化全局增益（与"先拼接再归一化"等价：拼接后峰值 = 各段淡变后峰值的最大者）
+      var gain = 1;
+      if ($('normalizeChk').checked) {
+        var peak = 0;
+        plan.parts.forEach(function (p) {
+          peak = Math.max(peak, AudioCore.segmentPeakAfterFade(
+            segs[p.index].pcm, plan.targetSampleRate, plan.targetChannels, 8,
+            p.trimStart, p.trimEnd
+          ));
+        });
+        if (peak > 0 && isFinite(peak)) gain = Math.min(0.89 / peak, 8);
+      }
+
       // WAV：头部先行（总帧数已由 planMerge 算出，无需回头补写）
       if (state.format === 'wav') {
         await write(AudioCore.buildWavHeader(
@@ -2180,6 +2231,11 @@
       segs.forEach(function (seg, segIndex) {
         if (!seg.pcm) return;
         var buf = segmentBuffer(seg);
+        /* buf 已就绪：要么零拷贝复用 seg.audioBuffer，要么从 seg.pcm 转换出独立
+         * AudioBuffer。此刻 src.buffer 一旦接住它，WebAudio 内部就持有这份数据，
+         * 与 WAV/MP3 的 streamMerge 一致——该段调度完立即释放解码数据，
+         * 不必等整场实时编码结束（多段长音频时这是主要内存峰值来源）。 */
+        releaseSegmentPcm(seg);
         var dur = buf.duration;
         var src = ctx.createBufferSource();
         src.buffer = buf;
@@ -2217,10 +2273,17 @@
         reject(new Error('M4A ' + err + '，请改用 WAV 或 MP3'));
       };
       rec.start(1000);
+      /* 进度双时钟：ctx.currentTime 在后台/锁屏挂起时会停走，若只靠它，
+       * p 永远到不了 1、recorder 不停止，合并挂起只能手动取消。
+       * 加一个 Date.now 墙钟兜底：音频时长 + 2 倍余量后强制收尾。 */
+      var wallStart = Date.now();
+      var wallLimit = Math.max(4000, (endTime - t0) * 1000 * 2 + 4000);
       var timer = setInterval(function () {
         // 实时编码与音频等长，取消必须立刻生效，不能等 endTime 到了才检查
         if (token !== state.mergeToken) { stopNow(); return; }
-        var p = Math.min(1, Math.max(0, (ctx.currentTime - t0) / Math.max(0.001, endTime - t0)));
+        var audioP = (ctx.currentTime - t0) / Math.max(0.001, endTime - t0);
+        var wallP = (Date.now() - wallStart) / wallLimit;
+        var p = Math.min(1, Math.max(0, Math.max(audioP, wallP)));
         onProgress(p);
         if (p >= 1) stopNow();
       }, 250);
@@ -2386,6 +2449,11 @@
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   }
 
+  /** 是否 Android（含平板与 Android WebView） */
+  function isAndroidDevice() {
+    return isAndroid();
+  }
+
   /**
    * 结果的 object URL 按需创建（V0.3.4）。
    * iOS 上在"合并成功"瞬间创建大 Blob 的 URL 并让 audio 加载，会叠加内存峰值，
@@ -2420,19 +2488,27 @@
     try { player.pause(); } catch (e) { /* 忽略 */ }
     player.removeAttribute('src');
     player.hidden = true;
+    // 重命名输入框：每次合并完成复位为当日日期（不带 merge 等字样）
+    $('resultName').value = todayDate();
+    $('resultNameExt').textContent = '.' + ext;
+    $('nameHint').textContent = '默认按当日日期命名；可改成自己需要的名称，扩展名自动添加。';
     $('resultMeta').textContent = ext.toUpperCase() +
       (meta.bitrate ? ' · ' + meta.bitrate + ' kbps' : '') +
       ' · ' + Math.round(meta.sampleRate / 1000) + 'kHz' +
       ' · 时长 ' + fmtTime(meta.durationSec) +
       ' · 大小 ' + fmtSize(blob.size);
     $('resultBox').hidden = false;
+    /* Android 上原生分享面板会把音频当「歌曲」弹出播放器，且无法把文件直接
+     * 分享到微信；隐藏「分享」按钮，只保留「下载到设备」。iOS/桌面仍显示分享。 */
+    $('btnShare').hidden = isAndroidDevice();
+    $('downloadHint').hidden = isIOSDevice();  // iOS 走保存链接，文案由 saveHint 给出
     // 新结果生成后，上一轮的保存链接已失效（服务端文件仍是旧的，blob URL 指向旧结果）
     $('saveLink').hidden = true;
     $('saveHint').textContent = '';
     $('btnSaveFile').hidden = false;   // 复位：iOS 兜底时可能被临时隐藏过
     $('saveBox').hidden = !state.serverReady;
     var big = blob.size > 60 * 1024 * 1024;
-    setStatus('合并完成，可试听、分享或下载' +
+    setStatus('合并完成，可试听、下载到设备' + (isIOSDevice() ? '或分享' : '') +
       (big ? '（文件较大，点「试听」时才加载，避免 iOS 因内存不足重载页面）' : ''));
   }
 
@@ -2495,7 +2571,7 @@
     if (!blob) { setStatus('还没有可保存的结果', true); return Promise.resolve(false); }
     var ext = state.mergedExt || 'wav';
     var mime = blob.type || 'audio/wav';
-    var filename = 'merged-' + nowStamp() + '.' + ext;
+    var filename = resultFileName(ext);
     var btn = $('btnSaveFile');
     btn.disabled = true;
     uploadState.busy = true;
@@ -2516,9 +2592,17 @@
         resolve(ok);
       }
       // 用 XHR 而非 fetch：只有 XHR 能拿到上传进度（大文件需要反馈）
-      var xhr = new XMLHttpRequest();
-      uploadState.xhr = xhr;
-      xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
+      var xhr;
+      try {
+        xhr = new XMLHttpRequest();
+        uploadState.xhr = xhr;
+        xhr.open('POST', 'api/upload?name=' + encodeURIComponent(filename) + '&mime=' + encodeURIComponent(mime));
+      } catch (eOpen) {
+        // open 抛异常也必须释放上传锁，否则整个导出通道永久卡死
+        setServerReady(false);
+        finish(false, '无法发起上传：' + (eOpen && eOpen.message ? eOpen.message : eOpen));
+        return;
+      }
       // 大文件按体积放宽，但绝不允许无限等待（旧实现无 timeout，服务假死后永远卡住）
       xhr.timeout = Math.max(60000, Math.ceil(blob.size / (256 * 1024)) * 1000);
       xhr.upload.onprogress = function (e) {
@@ -2533,7 +2617,7 @@
         } else {
           setServerReady(false);
           finish(false, '生成下载链接失败：' + ((data && data.error) || ('HTTP ' + xhr.status)) +
-            '。已切回本机保存，请再点一次「分享 / 下载」');
+            '。已切回本机保存，请再点一次「下载到设备」');
         }
       };
       function networkFail(msg) {
@@ -2542,7 +2626,7 @@
       }
       xhr.onerror = function () {
         networkFail('连不上下载服务：请确认电脑上运行着 node tools/serve.js，且手机与电脑在同一 Wi-Fi。' +
-          '已切回本机保存，请再点一次「分享 / 下载」');
+          '已切回本机保存，请再点一次「下载到设备」');
       };
       xhr.ontimeout = function () {
         networkFail('上传超时（下载服务无响应），已切回本机保存');
@@ -2558,6 +2642,10 @@
     link.href = url;
     // 同源链接：非 iOS 平台由此拿到文件名；iOS 主要靠服务端的 Content-Disposition
     link.setAttribute('download', name);
+    /* Android 上 target=_blank 会让浏览器新开标签页「打开」音频（跳到播放器），
+     * 而不是按 download 保存。移除 target，强制在当前页按下载处理。 */
+    if (isAndroidDevice()) link.removeAttribute('target');
+    else link.setAttribute('target', '_blank');
     link.hidden = false;
     /* 没有本地下载服务时，这里的 url 是内存 blob URL（iOS 可靠长按「下载链接文件」，
      * 也可能被直接下载）。此时「生成保存链接」按钮无意义（点了必然失败），隐藏掉。 */
@@ -2574,6 +2662,9 @@
       var a = document.createElement('a');
       a.href = url;
       a.download = filename;
+      /* 显式去掉 target：Android Chrome 遇到 target=_blank 的 blob/音频链接会
+       * 新开标签页交给播放器，而不是按 download 保存。当前页点击才走下载管理器。 */
+      a.removeAttribute('target');
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -2581,6 +2672,34 @@
     } catch (e) {
       return false;
     }
+  }
+
+  /**
+   * 「下载到设备」专用通道：只走 <a download> / 浏览器下载管理器，
+   * 绝不调用 navigator.share，也不 window.open(blobURL)。
+   * 这样 Android 上会落到「下载」目录，用户可从文件管理器转发到微信，
+   * 不会被系统分享面板当成音乐/歌曲打开某个播放器。
+   */
+  function downloadToDevice() {
+    var src = state.mergedBlob;
+    if (!src) { setStatus('还没有可下载的结果', true); return; }
+    var url = ensureResultUrl();
+    if (!url) return;
+    var ext = state.mergedExt || 'wav';
+    var filename = resultFileName(ext);
+    var size = src.size || 0;
+    var ok = downloadViaAnchor(url, filename);
+    if (!ok) {
+      setStatus('当前浏览器不支持下载，请改用系统浏览器（Chrome / Edge）打开本页', true);
+      return;
+    }
+    if (isIOSDevice()) {
+      showSaveLink(url, filename, size);
+      $('saveHint').textContent = 'iOS 上若未自动保存，长按上面的链接 →「下载链接文件」，' +
+        '完成后到「文件」App 的「下载」目录查看。';
+    }
+    setStatus('已开始下载：' + filename + '（' + fmtSize(size) + '）。' +
+      '下载完成后到系统「下载」目录找到它，即可转发到微信。');
   }
 
   async function shareOrDownload() {
@@ -2592,7 +2711,7 @@
     if (!url) return;
     var ext = state.mergedExt || 'wav';
     var mime = src.type || 'audio/wav';
-    var filename = 'merged-' + nowStamp() + '.' + ext;
+    var filename = resultFileName(ext);
     var size = src.size || 0;
     var isIOS = isIOSDevice();
 
@@ -2609,17 +2728,19 @@
       }
     }
 
-    /* 2) 系统分享优先 —— 这是 iOS 上不依赖电脑的唯一保存通道
-     *    （分享面板 → 存储到文件）。
+    /* 2) 系统分享：仅 iOS 使用。Android 上原生分享面板会把 audio/* 识别为
+     *    「音乐/歌曲」，列出音乐播放器（用户反馈的"歌手"）而非文件保存目标；
+     *    且部分 Android WebView 的 navigator.share 会退化成"用播放器打开"。
+     *    因此 Android 直接走后面的 <a download>，把文件交给下载管理器，
+     *    用户从「下载」目录手动转发到微信。
      *
-     *    V0.4.1 及之前这里有个"体积 > 80MB 就直接 window.open 交给播放器"的分支，
-     *    结果是 40 分钟左右的 WAV（约 400MB）根本进不了分享面板，用户只能看到
-     *    全屏播放器（而播放器没有保存入口）。现已移除该分支：无论大小先试分享。
+     *    V0.4.1 及之前还有个"体积 > 80MB 就直接 window.open 交给播放器"的分支，
+     *    同样会让 40 分钟 WAV 落到无保存入口的全屏播放器，已移除。
      *
      *    另外不要用 navigator.canShare 作为门槛：部分 Safari 版本对 audio/* 文件
      *    返回 false，但实际 share 可正常工作，用 try/catch 实测更准。
      */
-    if (navigator.share) {
+    if (navigator.share && !isAndroidDevice()) {
       try {
         /* 直接用已有的 blob 构造 File，不再 fetch(blobURL)：
          * 那条路会把整个结果在内存里再物化一份。OPFS 落盘的 File 没有 MIME type，
@@ -2748,6 +2869,7 @@
     $('fileInputAny').addEventListener('change', handleFilePick);
 
     $('btnRecord').addEventListener('click', toggleRecord);
+    $('btnDownload').addEventListener('click', downloadToDevice);
     $('btnShare').addEventListener('click', shareOrDownload);
     $('btnSaveFile').addEventListener('click', uploadForDownload);
     $('btnPlayResult').addEventListener('click', playResult);
@@ -2789,7 +2911,7 @@
       else if (act === 'copy') copySegment(id);
       else if (act === 'trim') {
         var seg = state.segments.find(function (s) { return s.id === id; });
-        if (seg) { seg.trimOpen = !seg.trimOpen; renderList(true); }
+        if (seg && !state.busy) { seg.trimOpen = !seg.trimOpen; renderList(true); }
       } else if (act === 'trim-reset') {
         var seg2 = state.segments.find(function (s) { return s.id === id; });
         if (seg2) { resetTrim(seg2); renderList(true); setStatus('已恢复「' + seg2.name + '」为整段'); }

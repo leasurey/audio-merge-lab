@@ -4,7 +4,71 @@
 
 ---
 
-## 未发布
+## V0.5.4 — 2026-11-20
+
+### 自定义重命名与默认日期文件名
+
+结果区新增「文件名」输入框。默认仅用当日日期（中国标准 `YYYY-MM-DD`，本地时区）
+作为文件名，例如 `2026-11-20.mp3`，不再带 `merged-` 或时间戳等合成字样；用户可填入
+自定义名称，扩展名由实际输出格式自动添加。文件名过滤 Windows/Android 非法字符、
+去掉控制字符、剥掉用户自带扩展名，避免双扩展名。下载、系统分享、生成保存链接
+三条导出路径统一使用同一个命名函数，保证名字一致。
+
+验证：`npm test` 全过（UI 42 项，新增 2 项命名契约）；真实 Edge 端到端 5/5，
+含"默认名为当日日期""实际下载名为 日期.mp3""自定义名清理非法字符与双扩展名"。
+
+### 全面审查修补（11 项）
+
+基于三路并行只读审查与交叉验证，修补如下问题。报告见 `.workbuddy/audit-2026-11-20.md`。
+
+**严重**：合并中可经兼容模式入口（`btnImportAny`）入列新片段。`enqueueFiles` 无 busy 守卫，
+新段以 `pcm=null` 入列后 `streamMerge` 在 `try` 之外读 `s.pcm.sampleRate` 抛错，
+不执行 `sink.abort()` → OPFS 留半成品。修法：`enqueueFiles` 加 busy 守卫、`setBusy`
+同时禁用兼容模式入口、把依赖 PCM 的初始化移入 `try`。
+
+**中等**：文档在线链接为裸域名（实测 403）改为带 sharecode；按钮改名后 `app.js`
+与 `guide.html` 的旧文案同步；MP4 解封装给 `frameCount`/`chunk count`/`scCount` 加上
+与文件/box 尺寸比对的上界，防止损坏文件卡死主线程；`gapSec` 加上界 3600s。
+
+**其他**：M4A 进度加墙钟兜底（AudioContext 后台挂起时不致录制不停）；M4A 输出时
+mp4 MIME 优先，避免安卓上选 M4A 实为 WebM；试听与剪切面板加 busy 守卫；
+`xhr.open` 加 try 防止上传锁死；`github-push` 回退清单补齐 4 个遗漏文件；
+`serve.js` 写入错误不外泄内部信息并加超时；`build.js` 增强 ES5 检查、
+子页面注入源闭合序列检查，去掉 Node>=15 才有的 `replaceAll`；统一 Android 判断。
+
+验证：`npm test` 全过（核心 77 / MP3 12 / UI 40）；真实 Edge 端到端 10/10 通过，
+含"合并中兼容模式入口被禁用""M4A 输出格式正确""无脚本错误"。
+审查中提出的 `emit` 对 ±Infinity 处理与既有测试约定（钳位到满幅）冲突，已保留原语义。
+
+### M4A 合并补上逐段内存释放
+
+审查合并内存释放路径时发现：WAV/MP3 的 `streamMerge()` 在每段消费后调用
+`releaseSegmentPcm()` 释放解码数据，但 M4A 的 `encodeM4AScheduled()` 完全没有释放。
+结果是 M4A 合并后所有片段的 PCM 一直驻留到删除片段或刷新页面；若连续合并多次，
+内存占用明显高于 WAV/MP3 路径。
+
+改动：在 `encodeM4AScheduled()` 中，缓冲经 `segmentBuffer()` 生成后、交给
+`src.buffer` 之前立即释放该段解码数据。此时 WebAudio 已可持有缓冲，释放不影响
+输出；`doMerge()` 后续计算时长只读 `seg.duration` 元数据，不依赖 PCM。释放后
+片段标记为 `released`，下次合并由 `ensureAllDecoded()` 自动重新解码，与
+WAV/MP3 行为一致。
+
+验证：`npm test` 全部通过（新增 1 项 UI 契约，锁定两条合并路径都必须释放、
+且 M4A 释放时机在缓冲生成之后）；真实 Edge 注入 WAV 走完整解码→M4A 合并链路，
+6 项检查通过——合并完成、时长非零、产物含释放逻辑、无脚本错误。未做真机验证。
+
+### 安卓端「下载到设备」与系统分享绕开
+
+同学反馈：安卓上点「分享 / 下载」后跳到系统内置的音乐播放器（"歌手"），无法把文件分享到微信。根因是结果区只有一个混合按钮，`shareOrDownload()` 在安卓上也走 `navigator.share({files})`：安卓系统分享面板把 `audio/*` 识别为歌曲，列出音乐播放器而非文件保存目标；部分 Android WebView 的原生分享还会退化成"用播放器打开"。
+
+改动：
+
+- 结果区拆成独立的「下载到设备」与「分享」两个按钮，下载文案说明保存后到「下载」目录转发微信。
+- 新增 `downloadToDevice()`，只走 `<a download>` 交给浏览器下载管理器，绝不调用 `navigator.share` 或 `window.open(blobURL)`。
+- `navigator.share` 分支加 `!isAndroidDevice()` 条件；`finishResult()` 在安卓上隐藏「分享」按钮，iOS 与桌面保持分享优先（iOS 保存到「文件」App 仍依赖系统分享）。
+- `downloadViaAnchor()` 与 `showSaveLink()` 在安卓上显式移除 `target="_blank"`：新开标签页会让 Chrome 用播放器打开音频而不是保存。
+
+验证：`npm test` 全部通过（新增 2 项 UI 契约）；本机 Edge 以安卓 Chrome、安卓微信、iOS Safari、桌面四种 UA 打开构建产物，16 项 DOM 与脚本错误检查通过；安卓 UA 下注入 `navigator.share` 计数器，点下载不触发原生分享、无结果时给出状态提示，运行时 6 项检查通过。未做真机安装验证。
 
 ### 微信 / QQ 内置浏览器引导
 

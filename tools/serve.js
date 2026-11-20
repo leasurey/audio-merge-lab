@@ -262,7 +262,8 @@ async function handleUpload(req, res, url) {
       req.resume(); // 丢弃剩余请求体，尽快释放连接
       return json(res, 413, { error: '文件超过上限（2 GB）' });
     }
-    return json(res, 500, { error: '写入失败：' + e.message });
+    console.error('[serve] 写入失败:', e);
+    return json(res, 500, { error: '写入失败（服务端已记录详细错误）' });
   }
   if (written > MAX_UPLOAD) {
     await fsp.unlink(target).catch(() => {});
@@ -394,7 +395,9 @@ function sendFile(res, file, st) {
 
 /* ---------------- 服务器 ---------------- */
 
+// 慢速/半开连接不应长期占用服务：120 秒无数据即断开
 const server = http.createServer((req, res) => {
+  req.setTimeout(120000);
   // 所有 handler 都是 async；统一兜底 rejection，避免单个畸形请求让进程退出
   handleRequest(req, res).catch((err) => {
     console.error('[serve] 请求处理异常:', err && err.stack ? err.stack : err);

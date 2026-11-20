@@ -632,6 +632,36 @@ select option, select optgroup {
   margin: 0 0 var(--sp-3);
   font-variant-numeric: tabular-nums;
 }
+/* 结果重命名：默认当天日期，用户可改；扩展名单独显示不可编辑 */
+.name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+}
+.name-row label {
+  font-size: 14px;
+  color: var(--label-2);
+  white-space: nowrap;
+}
+.name-row input {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #d1d1d6);
+  border-radius: 10px;
+  background: var(--card, #ffffff);
+  color: var(--label, #000000);
+  font: inherit;
+  font-size: 14px;
+}
+.name-row input:focus { outline: 2px solid var(--tint); outline-offset: 1px; }
+.name-ext {
+  font-size: 14px;
+  color: var(--label-2);
+  white-space: nowrap;
+}
 #saveBox { margin-top: var(--sp-3); }
 #saveLink {
   display: flex;

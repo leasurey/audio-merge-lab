@@ -67,9 +67,11 @@ const FALLBACK_FILES = [
   '.gitattributes', '.gitignore', 'CHANGELOG.md', 'LICENSE', 'README.md',
   'THIRD-PARTY-NOTICES.md', 'capacitor.config.json', 'compat.html', 'convert.html',
   'docs/maintainer-notes.md', 'guide.html', 'index.template.html', 'package.json',
-  'src/app.js', 'src/audio-core.js', 'src/boot-guard.js', 'src/manifest.webmanifest',
+  'src/app.js', 'src/audio-core.js', 'src/boot-guard.js', 'src/browser-hint.js',
+  'src/doc.css', 'src/manifest.webmanifest',
   'src/styles.css', 'src/sw.js', 'src/vendor/lame.min.js',
-  'src/vendor/mpg123-decoder.min.js', 'test/core.test.js', 'test/mp3.test.js',
+  'src/vendor/aac-decoder.min.js', 'src/vendor/mpg123-decoder.min.js',
+  'test/core.test.js', 'test/mp3.test.js', 'test/ui.test.js',
   'test/serve.test.js', 'test/verify_wav.py', 'tools/allow_lan.bat', 'tools/build.js',
   'tools/github-create-repo.js', 'tools/github-debug-page.js', 'tools/github-push.js',
   'tools/serve.js', '使用说明.md'

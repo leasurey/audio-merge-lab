@@ -27,7 +27,7 @@
   'use strict';
 
   /** 版本唯一权威值（README / 界面页脚 / package.json 均以此为源） */
-  var APP_VERSION = '0.5.3';
+  var APP_VERSION = '0.5.4';
 
   var DEFAULTS = {
     targetSampleRate: 44100, // 统一输出采样率（Hz）
@@ -203,7 +203,9 @@
       }
     }
     num('targetSampleRate', 1, 384000);
-    num('gapSec', 0);
+    // 上界 3600s：间隔再长没有实际意义，但无上界时 gapFrames 会放大到
+    // 让 Float32Array 在 WAV 4GB 检查之前就分配失败，抛 RangeError 而非友好提示
+    num('gapSec', 0, 3600);
     num('fadeMs', 0);
     num('normalizeTarget', 0, 1);
     num('maxNormalizeGain', 1);
@@ -1245,27 +1247,37 @@
     var fixedSize = u32(szBody + 4);
     var frameCount = u32(szBody + 8);
     if (!frameCount) return bail('stsz 帧数为 0');
+    /* 计数上界：stsz.entry_count 来自文件头，损坏/恶意文件可伪造 2^32 量级，
+     * 让逐帧循环卡死主线程。每帧至少占 1 字节，因此不可能超过文件长度。 */
+    if (frameCount > bytes.length) return bail('stsz 帧数超出文件可容纳范围');
 
     // stsc → 每块帧数；stco/co64 → 块偏移
     function fullEntries(box, itemSize) {
       var body = box.start + box.hdr;
       var cnt = u32(body + 4);
+      // 与 box 实际可容纳的条目数比对，防止伪造计数造成数十亿次循环
+      var room = Math.floor(Math.max(0, box.end - body - 8) / itemSize);
+      if (cnt > room) return null;
       var list = [];
       for (var i = 0; i < cnt; i++) {
-        if (itemSize === 12) list.push(u32(body + 8 + i * 12));
-        else list.push(u64(body + 8 + i * 8));
+        // itemSize=4 → stco(32 位偏移)；itemSize=8 → co64(64 位偏移)
+        list.push(itemSize === 4 ? u32(body + 8 + i * 4) : u64(body + 8 + i * 8));
       }
       return list;
     }
     var stscBody = stsc.start + stsc.hdr;
     var scCount = u32(stscBody + 4);
+    // stsc 每条目 12 字节；为 0 会让 scFirst[0]/scPer[0] 变成 undefined
+    if (!scCount || scCount > Math.floor(Math.max(0, stsc.end - stscBody - 8) / 12)) {
+      return bail('stsc 条目数无效或超出 box 范围');
+    }
     var scFirst = [], scPer = [];
     for (var m = 0; m < scCount; m++) {
       scFirst.push(u32(stscBody + 8 + m * 12));       // 1-based 起始块号
       scPer.push(u32(stscBody + 12 + m * 12));        // 每块帧数
     }
     var chunkOffsets = fullEntries(stco || co64, stco ? 4 : 8);
-    if (!chunkOffsets.length) return bail('stco/co64 块偏移为空');
+    if (!chunkOffsets || !chunkOffsets.length) return bail('stco/co64 块偏移为空或计数越界');
 
     function chunkOffset(zeroBased) {
       return stco ? u32(stco.start + stco.hdr + 8 + zeroBased * 4)
